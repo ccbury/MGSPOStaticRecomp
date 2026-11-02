@@ -137,8 +137,21 @@ PrxImage loadPrx(const Bytes& elf, uint32_t base) {
       hi = std::max(hi, it->second);
       ++n;
     }
-    if (n >= 2 && hi - lo < 0x2000)
-      for (auto j = runStart; j != it; ++j) img.jumpTargets.insert(j->second);
+    if (n >= 2 && hi - lo < 0x2000) {
+      // A table of functions looks the same as a switch table, but every entry follows a return.
+      constexpr uint32_t kJrRa = 0x03E00008;
+      auto afterReturn = [&](uint32_t t) {
+        uint32_t p = t;
+        int skipped = 0;
+        while (p >= base + 4 && rd(p - 4) == 0 && skipped < 64) {
+          p -= 4;
+          ++skipped;
+        }
+        return p >= base + 8 && (rd(p - 4) == kJrRa || rd(p - 8) == kJrRa);
+      };
+      for (auto j = runStart; j != it; ++j)
+        if (!afterReturn(j->second)) img.jumpTargets.insert(j->second);
+    }
   }
 
   // Exported functions: the library table lists NIDs, then addresses (already relocated).

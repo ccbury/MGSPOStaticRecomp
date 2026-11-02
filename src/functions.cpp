@@ -11,7 +11,7 @@ namespace {
 
 constexpr uint32_t kJrRa = 0x03E00008;
 
-bool looksLikeStart(const PrxImage& img, uint32_t addr) {
+bool looksLikeStart(const PrxImage& img, uint32_t addr, bool afterJump = false) {
   uint32_t p = addr;
   int skipped = 0;
   while (p >= img.base + 4 && img.word(p - 4) == 0 && skipped < 64) {
@@ -20,7 +20,11 @@ bool looksLikeStart(const PrxImage& img, uint32_t addr) {
   }
   if (p < img.base + 4) return true;
   if (img.word(p - 4) == kJrRa) return true;
-  return p >= img.base + 8 && img.word(p - 8) == kJrRa;
+  if (p < img.base + 8) return false;
+  uint32_t prev = img.word(p - 8);
+  if (prev == kJrRa) return true;
+  // for pointers the code may also follow an unconditional branch or jump and its delay slot
+  return afterJump && ((prev >> 16) == 0x1000 || (prev >> 26) == 2);
 }
 
 }  // namespace
@@ -58,6 +62,7 @@ Program discover(const PrxImage& img) {
 
   std::set<uint32_t> roots;
   std::set<uint32_t> jumpCandidates;
+  std::vector<std::pair<uint32_t, uint32_t>> branchRefs;
   DiscoveryStats& st = prog.stats;
 
   for (const auto& r : img.code) roots.insert(r.start);
@@ -93,6 +98,10 @@ Program discover(const PrxImage& img) {
         case Op::J:
           if (img.inCode(in.target) && !prog.isStub(in.target)) jumpCandidates.insert(in.target);
           break;
+        case Op::Beq: case Op::Bne: case Op::Blez: case Op::Bgtz: case Op::Beql: case Op::Bnel:
+        case Op::Blezl: case Op::Bgtzl: case Op::Bltz: case Op::Bgez: case Op::Bltzl: case Op::Bgezl:
+          if (img.inCode(in.target)) branchRefs.emplace_back(a, in.target);
+          break;
         default: break;
       }
     }
@@ -108,9 +117,24 @@ Program discover(const PrxImage& img) {
   for (uint32_t t : img.addressTaken) {
     if (roots.count(t) || img.jumpTargets.count(t) || prog.isStub(t)) continue;
     if (!img.inCode(t)) continue;
-    if (looksLikeStart(img, t)) {
+    if (looksLikeStart(img, t, true)) {
       roots.insert(t);
       ++st.pointerRoots;
+    }
+  }
+  // A branch that lands in a different function right after a return is really a tail jump to a
+  // function that nothing else points at.
+  for (const auto& br : branchRefs) {
+    uint32_t t = br.second;
+    if (roots.count(t) || prog.isStub(t)) continue;
+    auto ts = roots.upper_bound(t);
+    auto ss = roots.upper_bound(br.first);
+    if (ts == roots.begin() || ss == roots.begin() || *std::prev(ts) == *std::prev(ss)) continue;
+    uint32_t p = t;
+    while (p >= img.base + 4 && img.word(p - 4) == 0 && t - p < 256) p -= 4;
+    if (p >= img.base + 8 && (img.word(p - 4) == kJrRa || img.word(p - 8) == kJrRa)) {
+      roots.insert(t);
+      ++st.jumpRoots;
     }
   }
   st.roots = static_cast<uint32_t>(roots.size());
