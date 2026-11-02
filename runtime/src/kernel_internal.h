@@ -152,6 +152,7 @@ void sas_init();
 void register_atrac();
 void atrac_init();
 void register_misc();
+void register_mpeg();
 void register_font();
 
 }  // namespace k

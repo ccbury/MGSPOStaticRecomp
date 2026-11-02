@@ -16,8 +16,9 @@ Nothing here ships any game code or data. See [docs/legal.md](docs/legal.md).
 
 Work in progress. The main module, the helper libraries and a chosen set of stage modules are
 lifted to C++ and run against the runtime. The game boots, loads its stage modules from the disc,
-streams and inflates their data and issues GE command lists, but it does not draw any triangles
-yet. Current blockers are in [docs/boot-progress.md](docs/boot-progress.md); background on the
+streams and inflates their data and issues GE command lists. The intro movie plays (see
+[docs/movies.md](docs/movies.md)) and the game reaches its title screen. Current blockers are in
+[docs/boot-progress.md](docs/boot-progress.md); background on the
 binary is in [docs/eboot-notes.md](docs/eboot-notes.md).
 
 ## Quick start (Windows)
