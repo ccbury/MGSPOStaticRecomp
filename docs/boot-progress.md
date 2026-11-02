@@ -67,7 +67,7 @@ What the game does once the three helpers are started:
    (unimplemented here; another branch covers those). The thread spins, which is harmless apart
    from CPU use.
 2. The game polls `sceUmdGetDriveStat`, then opens files as
-   `disc0:/sce_lbn0x<lba>_size0x<sectors>`. These are raw sector windows onto the disc. The LBA
+   `disc0:/sce_lbn0x<lba>_size0x<bytes>`. These are raw sector windows onto the disc. The LBA
    comes from the file's `SceIoStat.st_private[0]` (offset 64, also embedded in the `sceIoDread`
    entries), so `sceIoGetstat`/`sceIoDread` now report the real LBA. `--iso` is needed to read
    them; `--disc` is still used for ordinary paths.
@@ -81,27 +81,37 @@ Lifter fixes found on the way (all were "call to unrecompiled address" crashes):
 * Pointer roots are accepted after an unconditional jump, not just after `jr ra`.
 * A branch-likely whose fall-through lands outside the function emits a call instead of a `goto`.
 
+## Stage modules
+
+The 106 stage modules are overlays: the game loads one at a time into the `mgp_stage` slot via
+`disc0:/sce_lbn0x<lba>_size0x<bytes>` (the size is in bytes, not sectors) with
+`sceKernelLoadModuleByID`, starts it, and later stops and unloads it. The lifter handles them with
+`--stage <prx>` (opt-in, see README). Each stage is lifted at its slot address, functions are
+deduplicated by content hash across stages, and at run time the loaded image is matched to a lifted
+module by hash. The runtime writes the unlinked image; the game's own relocator applies the `.rlc`
+link table in the `_zar` archive, and the lifter applies the same table to its copy so calls from
+stages into the main module resolve to real addresses. Main entry points that only stages reference
+are seeded as roots.
+
+Lifting all 106 stages gives about 321K functions (181K distinct, roughly 440 MB of C++), so it is
+not done by default.
+
 ## Where it stops
 
-With `--ge-stats` the run now reaches the GPU:
+With the init, r_main01/02, r_net01, gsmenu and title stages lifted the game loads three stages,
+inflates the big stage archive through the lifted zlib module and issues 77 GE lists
+(218 draws, 2552 vertices), but still rasterises 0 triangles. It then stops in `Main` with
+`bad guest address 0x00000000`.
 
-```
-lists 12, draw commands 20, vertices 320, triangles rasterised 0
-```
+Next blockers, roughly in order:
 
-then stops in `Main` with `bad guest address 0x00000040` right after
-`sceKernelStartModule` on the first stage module. Nothing is presented yet.
-
-Remaining blockers, roughly in order:
-
-1. **Stage modules.** The 106 `.prx` files under `USRDIR/stage` are plain ELF but are not lifted
-   or mapped. `sceKernelLoadModuleByID` currently returns an id with no exports, so the first call
-   into one dereferences null. They import only IoFileMgr, sceHttp, sceMpeg, sceNet*, sceNetAdhoc*,
-   sceNetApctl, sceNetInet, sceParseUri, sceRtc, sceSuspendForUser, sceUsb*, sceUtility and
-   ThreadMan. The fix is to lift them (as `--helper` modules or a separate overlay set), identify
-   which one a given disc window holds, map it at a base and run its start entry.
-2. **Audio.** `sceSasCore` and `sceAtrac3plus`, in progress elsewhere.
-3. **Triangles.** The 20 draw commands so far rasterise nothing; likely clear or state setup, to
-   be checked with `--ge-dump` once more of the game runs.
-4. **Network imports** (sceNet*, sceHttp) used by the stage modules will need stubs that report
-   "no connection".
+1. **Null dereference after the title stage starts.** Need the faulting pc (the error only names the
+   address). It follows `sceUtility` import `0x9A1C91D7`, which is stubbed to return 0 for now and
+   whose meaning is unknown; the real result may be a pointer or handle the game expects.
+2. **More stages.** Each new stage the game requests that is not lifted shows up as `not lifted`
+   with its size; add it with `--stage`. Jump-table style stubs reached by computed jumps can still
+   be missing from function discovery.
+3. **Triangles.** Draws so far are state/clear only; verify with `--ge-dump` once the game gets
+   further.
+4. **Network imports** (sceNet*, sceHttp) used by stages need stubs that report no connection.
+5. **Audio**: `sceSasCore`/`sceAtrac3plus` coverage.

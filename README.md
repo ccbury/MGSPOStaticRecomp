@@ -14,11 +14,55 @@ Nothing here ships any game code or data. See [docs/legal.md](docs/legal.md).
 
 ## Status
 
-Early groundwork. There is a command line tool that opens a PSP disc image, lists and
-extracts its files, reads `PARAM.SFO`, and parses the main module, plus a first-pass static
-lifter that turns the module's MIPS code into C++ and a small runtime it links against. The
-lifted code compiles and starts running, but no syscalls are implemented yet, and VFPU
-instructions are not translated. Findings are in [docs/eboot-notes.md](docs/eboot-notes.md).
+Work in progress. The main module, the helper libraries and a chosen set of stage modules are
+lifted to C++ and run against the runtime. The game boots, loads its stage modules from the disc,
+streams and inflates their data and issues GE command lists, but it does not draw any triangles
+yet. Current blockers are in [docs/boot-progress.md](docs/boot-progress.md); background on the
+binary is in [docs/eboot-notes.md](docs/eboot-notes.md).
+
+## Quick start (Windows)
+
+You need your own legally obtained disc image (plain `.iso`), Visual Studio 2022 (or Build Tools)
+with the C++ workload and CMake 3.16+. Run everything from an "x64 Native Tools Command Prompt".
+
+```
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build
+
+:: pull the disc files out (read only use; nothing here goes into git)
+build\mgspo-extract extract "Portable Ops.iso" disc PSP_GAME
+build\mgspo-extract eboot "Portable Ops.iso" boot
+
+:: lift the main module, the helper libraries and the stage modules you want
+set U=disc\PSP_GAME\USRDIR
+build\mgspo-lift boot\boot.elf gen ^
+    --helper %U%\modules\zlibdec.prx --helper %U%\modules\kjfs.prx --helper %U%\modules\sound2.prx ^
+    --stage %U%\stage\init\init.prx --stage %U%\stage\r_main01\r_main01.prx ^
+    --stage %U%\stage\r_main02\r_main02.prx --stage %U%\stage\r_net01\r_net01.prx ^
+    --stage %U%\stage\gsmenu\gsmenu.prx --stage %U%\stage\title\title.prx
+
+:: build the game around the lifted code (re-run configure after every re-lift)
+cmake -S . -B bgame -G Ninja -DCMAKE_BUILD_TYPE=Release -DMGSPO_GENERATED_DIR=%CD%/gen -DMGSPO_BUILD_TESTS=OFF
+cmake --build bgame
+
+:: run
+bgame\mgspo-game boot\boot.elf --disc disc --iso "Portable Ops.iso" --save sav
+```
+
+Notes:
+
+- `boot.elf` is `PSP_GAME/SYSDIR/BOOT.BIN`, which is a plain ELF on this disc. A separately
+  decrypted main module also works in its place.
+- `--stage <prx>` lifts a stage module as an overlay; `--stage-dir <dir>` does all of them. Lifting
+  every stage is huge (hundreds of MB of C++ and a long build), so lift only the stages the game
+  asks for. When the game loads a stage that was not lifted, the log shows `not lifted` with its
+  size; find the file with that size under `USRDIR\stage` and add it with `--stage`.
+- Add `--headless --timeout 60 --ge-stats` to run without a window and print GE statistics, and
+  `--ge-dump <file>` to dump the command lists.
+- Delete the `--save` folder between runs while debugging; the game behaves differently when it
+  finds old save data.
+- `--modules <dir>` is optional and takes already decrypted firmware modules.
 
 ## Building
 
@@ -77,7 +121,7 @@ mgspo-game <boot.elf> [--disc <dir>] [--iso <file>] [--modules <dir>] [--save <d
 window (2x) with keyboard or XInput controls: arrows = d-pad, Z/X/A/S = cross/circle/square/triangle,
 Q/E = L/R, Enter = start, Right Shift = select, IJKL = analog stick.
 
-The game also reads the disc by raw sector (`sce_lbn0x<lba>_size0x<sectors>`), so pass `--iso` as well to serve those. `--modules` points at a folder of already decrypted modules; see [docs/boot-progress.md](docs/boot-progress.md).
+The game also reads the disc by raw sector (`sce_lbn0x<lba>_size0x<bytes>`), so pass `--iso` as well to serve those. `--modules` points at a folder of already decrypted modules; see [docs/boot-progress.md](docs/boot-progress.md).
 
 Every import the game calls without an implementation is logged once with its module and NID.
 `--report` writes all imports in order of first call with call counts, which is the list to work

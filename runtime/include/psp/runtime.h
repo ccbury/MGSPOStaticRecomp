@@ -47,6 +47,20 @@ void hle(Cpu& c, uint32_t importIndex);
 // Indirect call/tail-call by guest address: recompiled function, import stub, or an error.
 void call(Cpu& c, uint32_t addr);
 
+// Overlay modules (stages) share an address range; their functions are found through a table of
+// function pointers indexed by (address - base) / 4 that is filled when a module is loaded.
+extern void (**g_ovTable)(Cpu&);
+extern uint32_t g_ovBase;
+[[noreturn]] void ov_missing(Cpu& c, uint32_t addr);
+inline void ovcall(Cpu& c, uint32_t addr) {
+  void (*fn)(Cpu&) = g_ovTable[(addr - g_ovBase) >> 2];
+  if (!fn) ov_missing(c, addr);
+  fn(c);
+}
+void ov_init(uint32_t base, uint32_t end);
+void ov_map(const FuncEntry* funcs, size_t count, const StubEntry* stubs, size_t stubCount);
+void ov_unmap(uint32_t base, uint32_t size);
+
 // Instructions the recompiler could not translate (VFPU, COP0, ...).
 [[noreturn]] void unimpl(Cpu& c, uint32_t addr, uint32_t raw);
 [[noreturn]] void syscall_insn(Cpu& c, uint32_t code);

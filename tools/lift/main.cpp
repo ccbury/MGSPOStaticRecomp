@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -17,12 +18,14 @@ namespace fs = std::filesystem;
 #include "functions.h"
 #include "mips.h"
 #include "prx.h"
+#include "zar.h"
 #include "vfpu.h"
 
 using namespace mgspo;
 
 static void usage() {
   std::cerr << "usage: mgspo-lift <module.elf> <outdir> [--base 0xADDR] [--per-file N] [--helper <module.prx>]... [--helper-dir <dir>]\n"
+               "                                    [--stage <module.prx>]... [--stage-dir <dir>]\n"
                "       mgspo-lift <module.elf> --stats [--base 0xADDR]\n"
                "       mgspo-lift <module.elf> --vfpu\n"
                "       mgspo-lift <module.elf> --disasm <start> <count>\n";
@@ -75,7 +78,7 @@ int main(int argc, char** argv) {
     uint32_t base = kDefaultBase;
     size_t perFile = 150;
     bool stats = false, disasm = false, vfpuHist = false;
-    std::vector<std::string> helpers;
+    std::vector<std::string> helpers, stages;
     uint32_t dStart = 0, dCount = 0;
     for (int i = 2; i < argc; ++i) {
       std::string a = argv[i];
@@ -100,6 +103,22 @@ int main(int argc, char** argv) {
         }
         std::sort(found.begin(), found.end());
         helpers.insert(helpers.end(), found.begin(), found.end());
+      }
+      else if (a == "--stage" && i + 1 < argc) stages.push_back(argv[++i]);
+      else if (a == "--stage-dir" && i + 1 < argc) {
+        // every plain PRX below the folder (stage/<name>/<name>.prx on the disc)
+        std::vector<std::string> found;
+        for (const auto& e : fs::recursive_directory_iterator(argv[++i])) {
+          if (!e.is_regular_file()) continue;
+          std::string ext = e.path().extension().string();
+          for (char& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+          if (ext != ".prx") continue;
+          std::vector<uint8_t> head = readFile(e.path().string());
+          if (head.size() < 4 || head[0] != 0x7F || head[1] != 'E' || head[2] != 'L' || head[3] != 'F') continue;
+          found.push_back(e.path().string());
+        }
+        std::sort(found.begin(), found.end());
+        stages.insert(stages.end(), found.begin(), found.end());
       }
       else if (a == "--vfpu") vfpuHist = true;
       else if (a == "--disasm" && i + 2 < argc) {
@@ -126,6 +145,27 @@ int main(int argc, char** argv) {
         std::printf("%08X  %08X  %s\n", a, i.raw, disassemble(i).c_str());
       }
       return 0;
+    }
+
+    // Stage modules call straight into the main executable through their link tables. Some of those
+    // targets are never reached from main itself, so they have to be seeded as entry points.
+    if (!stages.empty()) {
+      std::vector<uint32_t> segBases;
+      for (const auto& s : img.info.segments)
+        if (s.type == 1) segBases.push_back(img.base + s.vaddr);
+      std::set<uint32_t> seen;
+      for (const auto& path : stages) {
+        fs::path zarPath = fs::path(path).parent_path() / "_zar";
+        if (!fs::exists(zarPath)) continue;
+        Bytes table = findLinkTable(readFile(zarPath.string()));
+        if (table.empty()) continue;
+        PrxImage si = loadPrx(readFile(path), 0x10000000);
+        std::vector<uint32_t> t;
+        applyLinkTable(si, table, segBases, &t);
+        for (uint32_t a : t)
+          if (img.inCode(a) && seen.insert(a).second) img.extraRoots.push_back(a);
+      }
+      std::printf("seeded %zu entry points referenced from stage modules\n", img.extraRoots.size());
     }
 
     Program prog = discover(img);
@@ -164,13 +204,83 @@ int main(int argc, char** argv) {
       u.prog = &hp;
       u.name = h.info.module.name;
       u.file = fs::path(path).filename().string();
+      {
+        Bytes raw = readFile(path);
+        u.hash = hashBytes(raw.data(), raw.size());
+      }
       std::printf("helper %-12s base 0x%08X size 0x%X functions %zu imports %zu (unknown insns %u)\n",
                   u.name.c_str(), h.base, static_cast<unsigned>(h.mem.size()), hp.funcs.size(), hp.imports.size(),
                   hp.stats.unknownInsns);
       units.push_back(u);
     }
 
+    // Stage modules are overlays: they all sit in one range after the helpers. Small ones (the tiny
+    // loader/root modules) get a slot of their own so they can stay loaded next to a big stage.
+    std::deque<PrxImage> stageImgs;
+    std::deque<Program> stageProgs;
+    if (!stages.empty()) {
+      constexpr uint32_t kSmall = 0x10000;
+      struct Item {
+        std::string path;
+        Bytes raw;
+        uint32_t size = 0;
+      };
+      std::vector<uint32_t> mainSegBases;
+      for (const auto& s : img.info.segments)
+        if (s.type == 1) mainSegBases.push_back(img.base + s.vaddr);
+      std::vector<Item> items;
+      uint32_t smallMax = 0, bigMax = 0;
+      for (const auto& path : stages) {
+        Item it;
+        it.path = path;
+        it.raw = readFile(path);
+        it.size = static_cast<uint32_t>(loadPrx(it.raw, 0x10000000).mem.size());
+        (it.size <= kSmall ? smallMax : bigMax) = std::max(it.size <= kSmall ? smallMax : bigMax, it.size);
+        items.push_back(std::move(it));
+      }
+      next = (next + 0xFFF) & ~0xFFFu;
+      next += 0x1000;
+      uint32_t smallBase = next;
+      uint32_t bigBase = (smallBase + ((smallMax + 0xFFF) & ~0xFFFu) + 0xFFF) & ~0xFFFu;
+      std::map<std::pair<std::string, uint32_t>, uint32_t> interned;
+      for (const auto& it : items) {
+        uint32_t slotBase = it.size <= kSmall ? smallBase : bigBase;
+        stageImgs.push_back(loadPrx(it.raw, slotBase));
+        PrxImage& si = stageImgs.back();
+        // the game links the stage against the main executable using a table from the stage's _zar file
+        fs::path zarPath = fs::path(it.path).parent_path() / "_zar";
+        if (fs::exists(zarPath)) {
+          Bytes table = findLinkTable(readFile(zarPath.string()));
+          if (table.empty()) std::printf("note: no link table in %s\n", zarPath.string().c_str());
+          applyLinkTable(si, table, mainSegBases);
+        } else {
+          std::printf("note: no _zar next to %s, its references to the main module stay unlinked\n", it.path.c_str());
+        }
+        stageProgs.push_back(discover(si));
+        Program& sp = stageProgs.back();
+        // one import table for all overlays, keyed by library and NID
+        sp.stubIndex.clear();
+        for (auto& im : sp.imports) {
+          auto ins = interned.emplace(std::make_pair(im.module, im.nid), importBase + static_cast<uint32_t>(interned.size()));
+          im.index = ins.first->second;
+          sp.stubIndex[im.stub] = im.index;
+        }
+        ModuleUnit u;
+        u.prog = &sp;
+        u.name = si.info.module.name;
+        u.file = fs::path(it.path).filename().string();
+        u.overlay = true;
+        u.hash = hashBytes(it.raw.data(), it.raw.size());
+        if (sp.stats.unknownInsns) std::printf("note: %s has %u unknown instructions\n", it.path.c_str(), sp.stats.unknownInsns);
+        units.push_back(u);
+      }
+      std::printf("stages: %zu modules, small slot 0x%08X (0x%X), big slot 0x%08X (0x%X)\n", items.size(), smallBase,
+                  smallMax, bigBase, bigMax);
+    }
+
     EmitResult r = emitAll(units, opts);
+    if (r.overlayFunctions)
+      std::printf("overlay functions: %zu, distinct after de-duplication: %zu\n", r.overlayFunctions, r.overlayUnique);
     std::printf("wrote %zu files, %zu functions, %.1f MB, %zu untranslated instructions\n", r.files,
                 r.functions, r.bytes / 1048576.0, r.unimplemented);
     return 0;

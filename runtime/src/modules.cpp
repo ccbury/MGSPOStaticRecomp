@@ -11,6 +11,7 @@
 #include <string>
 
 #include "kernel_internal.h"
+#include "emit.h"
 #include "prx.h"
 
 namespace psp {
@@ -52,6 +53,14 @@ const ModuleDesc* desc_for_path(const std::string& path) {
   return nullptr;
 }
 
+// Modules are recognised by file content first (the game often opens them through a raw sector
+// window, which has no name), then by file name.
+const ModuleDesc* desc_for_file(const std::string& path, const std::vector<uint8_t>& file) {
+  uint64_t h = mgspo::hashBytes(file.data(), file.size());
+  for (size_t i = 1; i < g_descCount; ++i)
+    if (g_descs[i].hash && g_descs[i].hash == h) return &g_descs[i];
+  return desc_for_path(path);
+}
 uint32_t find_export(const char* lib, uint32_t nid) {
   for (const auto& kv : g_loaded) {
     const ModuleDesc* d = kv.first;
@@ -79,27 +88,32 @@ bool is_encrypted(const std::vector<uint8_t>& f) {
   return f.size() >= 4 && f[0] == '~' && f[1] == 'S' && f[2] == 'C';
 }
 
+bool overlaps(const ModuleDesc* a, const ModuleDesc* b) {
+  return a->base < b->base + b->size && b->base < a->base + a->size;
+}
+
+void unmap_module(const ModuleDesc* d) {
+  if (d->funcs) ov_unmap(d->base, d->size);
+}
+
 uint32_t load_module(const std::string& path) {
-  const ModuleDesc* d = desc_for_path(path);
-  if (!d) {
+  std::vector<uint8_t> file;
+  bool fromUser = read_user_module(path, file);
+  if (!fromUser && !io_read_file(path, file)) return E_NO_FILE;
+  const ModuleDesc* d = desc_for_file(path, file);
+  if (!d || is_encrypted(file)) {
     int32_t id = alloc_uid();
     g_modules[id] = {path, nullptr, false};
-    std::fprintf(stderr, "[module] load %s -> %X (not lifted, exports unavailable)\n", path.c_str(), id);
+    if (is_encrypted(file))
+      std::fprintf(stderr, "[module] load %s -> %X (encrypted, runtime replacement is used)\n", path.c_str(), id);
+    else
+      std::fprintf(stderr, "[module] load %s -> %X (not lifted: %zu bytes, hash %016llX)\n", path.c_str(), id,
+                   file.size(), static_cast<unsigned long long>(mgspo::hashBytes(file.data(), file.size())));
     return static_cast<uint32_t>(id);
   }
   auto already = g_loaded.find(d);
   if (already != g_loaded.end()) return static_cast<uint32_t>(already->second);
 
-  std::vector<uint8_t> file;
-  bool fromUser = read_user_module(path, file);
-  if (!fromUser && !io_read_file(path, file)) return E_NO_FILE;
-  if (is_encrypted(file)) {
-    // Nothing to map; the runtime's replacement library services this module's imports.
-    int32_t id = alloc_uid();
-    g_modules[id] = {path, nullptr, false};
-    std::fprintf(stderr, "[module] load %s -> %X (encrypted, runtime replacement is used)\n", path.c_str(), id);
-    return static_cast<uint32_t>(id);
-  }
   try {
     mgspo::PrxImage img = mgspo::loadPrx(file, d->base);
     if (img.mem.size() != d->size) {
@@ -107,7 +121,19 @@ uint32_t load_module(const std::string& path) {
                    path.c_str(), d->name, img.mem.size(), d->size);
       return E_ERROR_LOAD;
     }
+    // an overlay replaces whatever module sits in the same slot
+    for (auto it = g_loaded.begin(); it != g_loaded.end();) {
+      if (it->first->funcs && overlaps(it->first, d)) {
+        std::fprintf(stderr, "[module] %s replaced by %s\n", it->first->name, d->name);
+        unmap_module(it->first);
+        g_modules.erase(it->second);
+        it = g_loaded.erase(it);
+      } else {
+        ++it;
+      }
+    }
     mem_write(img.base, img.mem.data(), img.mem.size());
+    if (d->funcs) ov_map(d->funcs, d->funcCount, d->stubs, d->stubCount);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "[module] cannot load %s: %s\n", path.c_str(), e.what());
     return E_ERROR_LOAD;
@@ -119,7 +145,6 @@ uint32_t load_module(const std::string& path) {
                fromUser ? ", user supplied" : "");
   return static_cast<uint32_t>(id);
 }
-
 void h_load_module(Cpu& c) { ret(c, load_module(cstr(arg(c, 0)))); }
 
 void h_load_module_by_id(Cpu& c) {
@@ -161,7 +186,10 @@ void h_stop_module(Cpu& c) {
 void h_unload_module(Cpu& c) {
   auto it = g_modules.find(static_cast<int32_t>(arg(c, 0)));
   if (it == g_modules.end()) return ret(c, E_UNKNOWN_UID);
-  if (it->second.desc) g_loaded.erase(it->second.desc);
+  if (it->second.desc) {
+    unmap_module(it->second.desc);
+    g_loaded.erase(it->second.desc);
+  }
   g_modules.erase(it);
   ret(c, 0);
 }

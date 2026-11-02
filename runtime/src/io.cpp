@@ -161,7 +161,7 @@ bool fill_stat(uint32_t p, const fs::path& path, bool writable) {
   return true;
 }
 
-// disc0:/sce_lbn0x<lba>_size0x<sectors> addresses a raw range of the disc image.
+// disc0:/sce_lbn0x<lba>_size0x<bytes> addresses a raw range of the disc image.
 bool parse_lbn_path(const std::string& vpath, uint32_t& lba, uint32_t& sectors) {
   std::string s = lower(vpath);
   size_t colon = s.find(':');
@@ -188,7 +188,7 @@ int open_file(const std::string& vpath, uint32_t flags, uint32_t& err) {
     file.f = f;
     file.vpath = vpath;
     file.offset = static_cast<int64_t>(lba) * 2048;
-    file.limit = static_cast<int64_t>(sectors) * 2048;
+    file.limit = static_cast<int64_t>(sectors);
     SEEK64(f, file.offset, SEEK_SET);
     return fd;
   }  fs::path path;
@@ -271,9 +271,17 @@ int64_t do_write(int fd, uint32_t buf, uint32_t size) {
 int64_t do_seek(int fd, int64_t off, int whence) {
   auto it = g_files.find(fd);
   if (it == g_files.end()) return static_cast<int32_t>(E_IO_BADF);
+  File& file = it->second;
+  if (file.limit >= 0) {
+    int64_t cur = TELL64(file.f) - file.offset;
+    int64_t pos = whence == 0 ? off : whence == 1 ? cur + off : file.limit + off;
+    if (pos < 0) return static_cast<int32_t>(E_IO_INVAL);
+    SEEK64(file.f, file.offset + pos, SEEK_SET);
+    return pos;
+  }
   int w = whence == 0 ? SEEK_SET : whence == 1 ? SEEK_CUR : SEEK_END;
-  if (SEEK64(it->second.f, off, w) != 0) return static_cast<int32_t>(E_IO_INVAL);
-  return TELL64(it->second.f);
+  if (SEEK64(file.f, off, w) != 0) return static_cast<int32_t>(E_IO_INVAL);
+  return TELL64(file.f);
 }
 
 int do_close(int fd) {
@@ -352,6 +360,9 @@ void h_lseek32_async(Cpu& c) {
   int fd = static_cast<int>(arg(c, 0));
   set_async(c, fd, do_seek(fd, static_cast<int32_t>(arg(c, 1)), static_cast<int>(arg(c, 2))));
 }
+
+// UMD ioctls (file position, sector lookups) have nothing to do on a host file system
+void h_ioctl_async(Cpu& c) { set_async(c, static_cast<int>(arg(c, 0)), 0); }
 
 void async_result(Cpu& c, int fd, uint32_t resPtr, bool poll) {
   (void)poll;
@@ -511,6 +522,17 @@ std::string io_path_of_fd(int fd) {
 }
 
 bool io_read_file(const std::string& vpath, std::vector<uint8_t>& out) {
+  uint32_t lba = 0, bytes = 0;
+  if (parse_lbn_path(vpath, lba, bytes)) {
+    if (config().discImage.empty()) return false;
+    FILE* f = std::fopen(config().discImage.c_str(), "rb");
+    if (!f) return false;
+    SEEK64(f, static_cast<int64_t>(lba) * 2048, SEEK_SET);
+    out.resize(bytes);
+    bool ok = bytes == 0 || std::fread(out.data(), 1, out.size(), f) == out.size();
+    std::fclose(f);
+    return ok;
+  }
   fs::path p;
   bool w = false;
   if (!resolve(vpath, p, w)) return false;
@@ -555,6 +577,7 @@ void register_io() {
   register_hle(m, 0xEB092469, "sceIoDclose", h_dclose);
   register_hle(m, 0x54F5FB11, "sceIoDevctl", h_devctl);
   register_hle(m, 0x63632449, "sceIoIoctl", h_zero);
+  register_hle(m, 0xE95A012B, "sceIoIoctlAsync", h_ioctl_async);
 }
 
 }  // namespace k

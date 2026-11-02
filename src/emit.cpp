@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
+#include <cstring>
 #include <fstream>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -43,6 +45,7 @@ struct Ctx {
   const Program& prog;
   const Function& fn;
   size_t unimpl = 0;
+  bool overlay = false;
 };
 
 std::string unimplStmt(Ctx& cx, const Insn& i) {
@@ -172,10 +175,11 @@ std::string condition(const Insn& i) {
   }
 }
 
-std::string callTo(const Program& prog, uint32_t target) {
+std::string callTo(const Program& prog, uint32_t target, bool overlay) {
   auto st = prog.stubIndex.find(target);
   if (st != prog.stubIndex.end()) return "psp::hle(c, " + std::to_string(st->second) + ");";
-  if (prog.find(target)) return funcName(target) + "(c);";
+  // overlay functions are shared between modules, so calls go through the address table
+  if (prog.find(target)) return overlay ? "psp::ovcall(c, " + hex32(target) + ");" : funcName(target) + "(c);";
   return "psp::call(c, " + hex32(target) + ");";
 }
 
@@ -187,9 +191,10 @@ std::string funcName(uint32_t addr) {
   return b;
 }
 
-std::string emitFunction(const Program& prog, const Function& fn, size_t* unimplemented) {
+std::string emitFunction(const Program& prog, const Function& fn, size_t* unimplemented, bool overlay) {
   const PrxImage& img = *prog.img;
   Ctx cx{prog, fn};
+  cx.overlay = overlay;
 
   auto inFn = [&](uint32_t a) { return a >= fn.start && a < fn.end; };
 
@@ -208,7 +213,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
 
   std::string out;
   std::set<uint32_t> skip, terminal;
-  out += "void " + funcName(fn.start) + "(psp::Cpu& c) {\n";
+  out += "void " + (overlay ? std::string(kOverlayNameToken) : funcName(fn.start)) + "(psp::Cpu& c) {\n";
 
   auto delayOf = [&](uint32_t pc) {
     Insn d = decode(img.word(pc + 4), pc + 4);
@@ -216,7 +221,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
     return simple(cx, d);
   };
   auto tail = [&](uint32_t target) {
-    return inFn(target) ? "goto " + label(target) + ";" : callTo(prog, target) + " return;";
+    return inFn(target) ? "goto " + label(target) + ";" : callTo(prog, target, overlay) + " return;";
   };
 
   for (uint32_t pc = fn.start; pc < fn.end; pc += 4) {
@@ -251,7 +256,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
         skip.insert(pc + 4);
         break;
       case Op::Jal:
-        out += "  c.r[31] = " + hex32(pc + 8) + "; " + delay + " " + callTo(prog, i.target) + "\n";
+        out += "  c.r[31] = " + hex32(pc + 8) + "; " + delay + " " + callTo(prog, i.target, overlay) + "\n";
         skip.insert(pc + 4);
         break;
       case Op::J:
@@ -264,7 +269,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
         if (linkedBranch) {
           // Only the unconditional "bal" form shows up in practice.
           if (i.op == Op::Bgezal && i.rs == 0) {
-            out += "  c.r[31] = " + hex32(pc + 8) + "; " + delay + " " + callTo(prog, i.target) + "\n";
+            out += "  c.r[31] = " + hex32(pc + 8) + "; " + delay + " " + callTo(prog, i.target, overlay) + "\n";
           } else {
             out += "  " + unimplStmt(cx, i) + "\n";
           }
@@ -288,7 +293,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
   }
 
   bool ends = terminal.count(fn.end - 8) || terminal.count(fn.end - 4);
-  if (!ends) out += "  " + callTo(prog, fn.end) + "\n";
+  if (!ends) out += "  " + callTo(prog, fn.end, overlay) + "\n";
   out += "}\n";
 
   // Drop labels nothing jumps to (keeps the compiler quiet).
@@ -302,6 +307,12 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
 
   if (unimplemented) *unimplemented += cx.unimpl;
   return out;
+}
+
+uint64_t hashBytes(const uint8_t* data, size_t size) {
+  uint64_t h = 0xCBF29CE484222325ull;
+  for (size_t i = 0; i < size; ++i) h = (h ^ data[i]) * 0x100000001B3ull;
+  return h;
 }
 
 namespace {
@@ -329,9 +340,15 @@ EmitResult emitAll(const std::vector<ModuleUnit>& units, const EmitOptions& opts
 
   std::vector<ImportRef> allImports;
   std::vector<std::pair<const Program*, Function>> work;
+  std::set<uint32_t> seenImports;
   for (const auto& u : units) {
-    for (const auto& f : u.prog->funcs) work.emplace_back(u.prog, f);
-    for (const auto& im : u.prog->imports) allImports.push_back(im);
+    if (!u.overlay)
+      for (const auto& f : u.prog->funcs) work.emplace_back(u.prog, f);
+    for (const auto& im : u.prog->imports) {
+      if (!seenImports.insert(im.index).second) continue;
+      allImports.push_back(im);
+      if (u.overlay) allImports.back().stub = 0xFFFFFFFFu;  // overlay stubs are listed per module
+    }
   }
   std::sort(work.begin(), work.end(), [](const auto& a, const auto& b) { return a.second.start < b.second.start; });
   std::sort(allImports.begin(), allImports.end(),
@@ -342,6 +359,25 @@ EmitResult emitAll(const std::vector<ModuleUnit>& units, const EmitOptions& opts
   for (const auto& w : work) header += "void " + funcName(w.second.start) + "(psp::Cpu& c);\n";
   writeFile(fs::path(opts.outDir) / "funcs.h", header);
   res.bytes += header.size();
+
+  // Overlay functions: identical bodies (same address, same words, same imports) are written once.
+  struct OverlayFn {
+    uint32_t addr;
+    uint64_t hash;
+  };
+  std::map<uint64_t, std::string> bodies;
+  std::vector<std::vector<OverlayFn>> overlayFns(units.size());
+  for (size_t k = 0; k < units.size(); ++k) {
+    if (!units[k].overlay) continue;
+    for (const auto& f : units[k].prog->funcs) {
+      std::string body = emitFunction(*units[k].prog, f, &res.unimplemented, true);
+      uint64_t h = hashBytes(reinterpret_cast<const uint8_t*>(body.data()), body.size());
+      overlayFns[k].push_back({f.start, h});
+      ++res.overlayFunctions;
+      bodies.emplace(h, std::move(body));
+    }
+  }
+  res.overlayUnique = bodies.size();
 
   size_t n = 0, fileNo = 0;
   std::string buf;
@@ -362,7 +398,61 @@ EmitResult emitAll(const std::vector<ModuleUnit>& units, const EmitOptions& opts
   }
   flush();
 
+  auto ovName = [](uint64_t h) {
+    char b[32];
+    std::snprintf(b, sizeof b, "o_%016llX", static_cast<unsigned long long>(h));
+    return std::string(b);
+  };
+  {
+    size_t m = 0, ovFile = 0;
+    std::string obuf;
+    auto oflush = [&]() {
+      if (obuf.empty()) return;
+      char name[32];
+      std::snprintf(name, sizeof name, "ovl_%03zu.cpp", ovFile++);
+      std::string text = "// Generated by mgspo-lift. Do not edit.\n#include <cmath>\n#include <psp/runtime.h>\n#include <psp/vfpu.h>\n\n" + obuf;
+      writeFile(fs::path(opts.outDir) / name, text);
+      res.bytes += text.size();
+      ++res.files;
+      obuf.clear();
+    };
+    for (auto& kv : bodies) {
+      std::string body = kv.second;
+      body.replace(body.find(kOverlayNameToken), std::strlen(kOverlayNameToken), ovName(kv.first));
+      obuf += body + "\n";
+      if (++m % opts.funcsPerFile == 0) oflush();
+    }
+    oflush();
+  }
+  // One table file per overlay module.
+  for (size_t k = 0; k < units.size(); ++k) {
+    if (!units[k].overlay) continue;
+    std::set<uint64_t> used;
+    for (const auto& of : overlayFns[k]) used.insert(of.hash);
+    std::string t = "// Generated by mgspo-lift. Do not edit.\n#include <psp/cpu.h>\n\n";
+    for (uint64_t h : used) t += "void " + ovName(h) + "(psp::Cpu&);\n";
+    std::string id = std::to_string(k);
+    t += "extern const psp::FuncEntry kOvFuncs" + id + "[] = {\n";
+    for (const auto& of : overlayFns[k]) t += "  {" + hex32(of.addr) + ", " + ovName(of.hash) + "},\n";
+    t += "};\nextern const size_t kOvFuncCount" + id + " = " + std::to_string(overlayFns[k].size()) + ";\n";
+    t += "extern const psp::StubEntry kOvStubs" + id + "[] = {\n";
+    for (const auto& im : units[k].prog->imports) t += "  {" + hex32(im.stub) + ", " + std::to_string(im.index) + "},\n";
+    t += "  {0, 0},\n};\nextern const size_t kOvStubCount" + id + " = " + std::to_string(units[k].prog->imports.size()) + ";\n";
+    char fname[40];
+    std::snprintf(fname, sizeof fname, "ovmod_%03zu.cpp", k);
+    writeFile(fs::path(opts.outDir) / fname, t);
+    res.bytes += t.size();
+    ++res.files;
+  }
+
   const PrxImage& mainImg = *units[0].prog->img;
+  uint32_t ovBase = 0, ovEnd = 0;
+  for (const auto& u : units) {
+    if (!u.overlay) continue;
+    uint32_t b = u.prog->img->base, e = b + static_cast<uint32_t>(u.prog->img->mem.size());
+    ovBase = ovBase ? std::min(ovBase, b) : b;
+    ovEnd = std::max(ovEnd, e);
+  }
   std::string th =
       "// Generated by mgspo-lift. Do not edit.\n#pragma once\n#include <cstddef>\n#include <psp/cpu.h>\n"
       "#include <psp/module.h>\n\n"
@@ -370,6 +460,8 @@ EmitResult emitAll(const std::vector<ModuleUnit>& units, const EmitOptions& opts
       "extern const psp::ImportEntry kImports[];\nextern const size_t kImportCount;\n"
       "extern const psp::ModuleDesc kModules[];\nextern const size_t kModuleCount;\n"
       "constexpr uint32_t kModuleBase = " + hex32(mainImg.base) + ";\n"
+      "constexpr uint32_t kOverlayBase = " + hex32(ovBase) + ";\n"
+      "constexpr uint32_t kOverlayEnd = " + hex32(ovEnd) + ";\n"
       "constexpr uint32_t kModuleEntry = " + hex32(mainImg.entry) + ";\n"
       "constexpr uint32_t kModuleGp = " + hex32(mainImg.gp) + ";\n";
   writeFile(fs::path(opts.outDir) / "tables.h", th);
@@ -386,6 +478,12 @@ EmitResult emitAll(const std::vector<ModuleUnit>& units, const EmitOptions& opts
   }
   tc += "};\nconst size_t kImportCount = " + std::to_string(allImports.size()) + ";\n\n";
 
+  for (size_t k = 0; k < units.size(); ++k) {
+    if (!units[k].overlay) continue;
+    std::string id = std::to_string(k);
+    tc += "extern const psp::FuncEntry kOvFuncs" + id + "[];\nextern const size_t kOvFuncCount" + id + ";\n";
+    tc += "extern const psp::StubEntry kOvStubs" + id + "[];\nextern const size_t kOvStubCount" + id + ";\n";
+  }
   for (size_t k = 0; k < units.size(); ++k) {
     const PrxImage& img = *units[k].prog->img;
     tc += "static const psp::ModuleExport kExports" + std::to_string(k) + "[] = {\n";
@@ -409,7 +507,14 @@ EmitResult emitAll(const std::vector<ModuleUnit>& units, const EmitOptions& opts
     if (!start && img.info.entry != 0xFFFFFFFFu && img.inCode(img.entry)) start = img.entry;
     tc += "  {\"" + units[k].name + "\", \"" + units[k].file + "\", " + hex32(img.base) + ", " +
           hex32(static_cast<uint32_t>(img.mem.size())) + ", " + hex32(start) + ", " + hex32(stop) + ", " +
-          hex32(img.gp) + ", kExports" + std::to_string(k) + ", " + std::to_string(img.exports.size()) + "},\n";
+          hex32(img.gp) + ", kExports" + std::to_string(k) + ", " + std::to_string(img.exports.size()) + ", " +
+          std::to_string(units[k].hash) + "ull, ";
+    if (units[k].overlay) {
+      std::string id = std::to_string(k);
+      tc += "kOvFuncs" + id + ", kOvFuncCount" + id + ", kOvStubs" + id + ", kOvStubCount" + id + "},\n";
+    } else {
+      tc += "nullptr, 0, nullptr, 0},\n";
+    }
   }
   tc += "};\nconst size_t kModuleCount = " + std::to_string(units.size()) + ";\n";
   writeFile(fs::path(opts.outDir) / "tables.cpp", tc);

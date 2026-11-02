@@ -25,6 +25,12 @@ struct FuncEntry {
   void (*fn)(Cpu&);
 };
 
+// An import stub inside an overlay module, and the index of the import it stands for.
+struct StubEntry {
+  uint32_t addr;
+  uint32_t import;
+};
+
 // One imported function stub (8 bytes in the guest image) identified by library and NID.
 struct ImportEntry {
   uint32_t stub;

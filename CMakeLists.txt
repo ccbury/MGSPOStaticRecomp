@@ -18,6 +18,7 @@ add_library(mgspo STATIC
   src/elf.cpp
   src/mips.cpp
   src/prx.cpp
+  src/zar.cpp
   src/functions.cpp
   src/emit.cpp
   src/vfpu.cpp

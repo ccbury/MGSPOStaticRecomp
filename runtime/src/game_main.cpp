@@ -97,6 +97,7 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < kModuleCount; ++i)
       heap = std::max(heap, (kModules[i].base + kModules[i].size + 0xFFF) & ~0xFFFu);
 
+    psp::ov_init(kOverlayBase, kOverlayEnd);
     psp::kernel_init(cfg, heap, kModuleGp + kModuleBase);
     psp::kernel_bind_modules(kModules, kModuleCount);
     psp::register_all_hle();

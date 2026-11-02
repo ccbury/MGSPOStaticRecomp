@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -139,7 +140,41 @@ void write_import_report(std::FILE* out) {
                  g_handlers[idx] ? "implemented" : g_linked[idx] ? "linked" : "UNIMPLEMENTED");
   }
 }
+void (**g_ovTable)(Cpu&) = nullptr;
+uint32_t g_ovBase = 0;
+static uint32_t g_ovEnd = 0;
+static std::vector<void (*)(Cpu&)> g_ovStore;
+static std::map<uint32_t, uint32_t> g_ovStubs;
+
+void ov_init(uint32_t base, uint32_t end) {
+  g_ovBase = base;
+  g_ovEnd = end;
+  g_ovStore.assign(end > base ? (end - base) / 4 + 1 : 1, nullptr);
+  g_ovTable = g_ovStore.data();
+  g_ovStubs.clear();
+}
+
+void ov_map(const FuncEntry* funcs, size_t count, const StubEntry* stubs, size_t stubCount) {
+  for (size_t i = 0; i < count; ++i) g_ovTable[(funcs[i].addr - g_ovBase) >> 2] = funcs[i].fn;
+  for (size_t i = 0; i < stubCount; ++i) g_ovStubs[stubs[i].addr] = stubs[i].import;
+}
+
+void ov_unmap(uint32_t base, uint32_t size) {
+  for (uint32_t a = base; a < base + size; a += 4) g_ovTable[(a - g_ovBase) >> 2] = nullptr;
+  g_ovStubs.erase(g_ovStubs.lower_bound(base), g_ovStubs.lower_bound(base + size));
+}
+
+void ov_missing(Cpu&, uint32_t addr) {
+  throw std::runtime_error("call to " + hex(addr) + " in an overlay that is not loaded or not lifted");
+}
+
 void call(Cpu& c, uint32_t addr) {
+  if (addr >= g_ovBase && addr < g_ovEnd) {
+    if (auto fn = g_ovTable[(addr - g_ovBase) >> 2]) return fn(c);
+    auto st = g_ovStubs.find(addr);
+    if (st != g_ovStubs.end() || (st = g_ovStubs.find(addr - 4)) != g_ovStubs.end()) return hle(c, st->second);
+    ov_missing(c, addr);
+  }
   const FuncEntry* end = g_funcs + g_funcCount;
   const FuncEntry* it = std::lower_bound(g_funcs, end, addr, [](const FuncEntry& e, uint32_t a) { return e.addr < a; });
   if (it != end && it->addr == addr) {
@@ -152,7 +187,7 @@ void call(Cpu& c, uint32_t addr) {
       return;
     }
   }
-  throw std::runtime_error("call to unrecompiled address " + hex(addr));
+  throw std::runtime_error("call to unrecompiled address " + hex(addr) + " (ra " + hex(c.r[31]) + ")");
 }
 
 void unimpl(Cpu&, uint32_t addr, uint32_t raw) {
