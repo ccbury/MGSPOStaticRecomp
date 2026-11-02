@@ -9,6 +9,7 @@
 #include <string>
 #include <thread>
 
+#include <psp/ge_debug.h>
 #include <psp/kernel.h>
 #include <psp/runtime.h>
 
@@ -25,6 +26,8 @@ static void usage(const char* prog) {
                "  --headless  no window or audio\n"
                "  --trace   log every import call\n"
                "  --report  write the list of imports that were called to a file\n"
+               "  --ge-dump write every GE command that is executed to a file\n"
+               "  --ge-stats print GE command/draw statistics when the run ends\n"
                "  --timeout stop after this many seconds (and write the report)\n",
                prog);
 }
@@ -38,6 +41,7 @@ static void write_report(const std::string& path) {
   } else {
     psp::write_import_report(stderr);
   }
+  psp::ge_write_stats(stderr);
   std::fflush(nullptr);
 }
 
@@ -45,6 +49,7 @@ int main(int argc, char** argv) {
   std::string module, reportPath;
   int timeoutSec = 0;
   psp::KernelConfig cfg;
+  psp::GeDebugOptions geOpt;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     bool more = i + 1 < argc;
@@ -54,6 +59,8 @@ int main(int argc, char** argv) {
     else if (a == "--timeout" && more) timeoutSec = std::atoi(argv[++i]);
     else if (a == "--headless") cfg.headless = true;
     else if (a == "--trace") cfg.trace = true;
+    else if (a == "--ge-dump" && more) geOpt.dumpPath = argv[++i];
+    else if (a == "--ge-stats") geOpt.stats = true;
     else if (module.empty() && a[0] != '-') module = a;
     else {
       usage(argv[0]);
@@ -78,6 +85,7 @@ int main(int argc, char** argv) {
   try {
     mgspo::PrxImage img = mgspo::loadPrx(mgspo::readFile(module), kModuleBase);
     psp::init_memory();
+    psp::ge_set_debug(geOpt);
     psp::mem_write(img.base, img.mem.data(), img.mem.size());
     uint32_t heap = (img.base + static_cast<uint32_t>(img.mem.size()) + 0xFFF) & ~0xFFFu;
 

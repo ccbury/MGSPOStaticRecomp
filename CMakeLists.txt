@@ -40,6 +40,8 @@ add_library(mgspo_rt STATIC
   runtime/src/io.cpp
   runtime/src/display.cpp
   runtime/src/ge.cpp
+  runtime/src/gpu.cpp
+  runtime/src/gpu_draw.cpp
   runtime/src/audio.cpp
   runtime/src/misc.cpp
   runtime/src/vfpu.cpp
@@ -84,4 +86,9 @@ if(MGSPO_BUILD_TESTS)
   add_executable(mgspo-vfpu-tests tests/test_vfpu.cpp)
   target_link_libraries(mgspo-vfpu-tests PRIVATE mgspo mgspo_rt)
   add_test(NAME mgspo-vfpu-tests COMMAND mgspo-vfpu-tests)
+
+  add_executable(mgspo-ge-tests tests/test_ge.cpp)
+  target_link_libraries(mgspo-ge-tests PRIVATE mgspo_rt)
+  target_include_directories(mgspo-ge-tests PRIVATE runtime/src)
+  add_test(NAME mgspo-ge-tests COMMAND mgspo-ge-tests)
 endif()
