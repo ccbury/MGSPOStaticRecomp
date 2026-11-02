@@ -206,6 +206,7 @@ void register_audio() {
   register_hle(m, 0x13F592BC, "sceAudioOutputPannedBlocking", h_output_panned_blocking);
   register_hle(m, 0xE2D56B2D, "sceAudioOutputPanned", h_output_panned);
   register_hle(m, 0xE9D97901, "sceAudioGetChannelRestLen", h_rest_len);
+  register_hle(m, 0xB011922F, "sceAudioGetChannelRestLength", h_rest_len);
   register_hle(m, 0xCB2E439E, "sceAudioSetChannelDataLen", h_set_len);
   register_hle(m, 0x95FD0C2D, "sceAudioChangeChannelConfig", h_change_config);
   register_hle(m, 0xB7E1D8E7, "sceAudioChangeChannelVolume", h_change_volume);

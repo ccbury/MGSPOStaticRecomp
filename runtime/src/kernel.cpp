@@ -52,6 +52,8 @@ void kernel_init(const KernelConfig& cfg, uint32_t userHeapStart, uint32_t gp) {
   k::display_init();
   k::ge_init();
   k::audio_init();
+  k::sas_init();
+  k::atrac_init();
   set_hle_trace(cfg.trace);
 }
 
@@ -66,6 +68,8 @@ void register_all_hle() {
   k::register_ctrl();
   k::register_ge();
   k::register_audio();
+  k::register_sas();
+  k::register_atrac();
   k::register_misc();
 }
 
