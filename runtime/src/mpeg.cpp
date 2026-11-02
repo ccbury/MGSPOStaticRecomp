@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "kernel_internal.h"
+#include "atrac3plus.h"
 #include "mpeg_demux.h"
 #include "video_decoder.h"
 
@@ -53,6 +54,12 @@ struct Context {
   uint32_t videoAus = 0, audioAus = 0, pictures = 0;
   int64_t firstPts = -1, lastPts = -1, audioPts = -1;
   uint64_t startUs = 0;
+  mpeg::Au audio;
+  bool haveAudio = false;
+  int audioChannels = 2;
+  int atracChannels = 0;
+  bool atracOk = false;
+  atrac::Atrac3PlusDecoder atrac;
 };
 
 std::map<uint32_t, Context> g_ctx;
@@ -167,8 +174,8 @@ void h_create(Cpu& c) {
   uint32_t mpegPtr = arg(c, 0), data = arg(c, 1), rb = arg(c, 3);
   uint32_t handle = data + 0x30;
   sw(mpegPtr, handle);
+  g_ctx.erase(handle);
   Context& x = g_ctx[handle];
-  x = Context();
   x.ring = rb;
   if (rb) sw(rb + kRbMpeg, mpegPtr);
   ret(c, 0);
@@ -262,9 +269,11 @@ void h_get_atrac_au(Cpu& c) {
   sw(out + 20, kAtracEsSize);
   put32(arg(c, 3), 0);
   x->audioPts = au.pts;
+  x->audio = std::move(au);
+  x->haveAudio = true;
   ++x->audioAus;
   if (std::getenv("MGSPO_MPEG_DEBUG") && x->audioAus % 200 == 0)
-    std::fprintf(stderr, "mpeg audio au %u pts=%lld t=%llums\n", x->audioAus, (long long)au.pts, (unsigned long long)(now_us() / 1000));
+    std::fprintf(stderr, "mpeg audio au %u pts=%lld t=%llums\n", x->audioAus, (long long)x->audioPts, (unsigned long long)(now_us() / 1000));
   sync_ring(*x);
   ret(c, 0);
 }
@@ -329,12 +338,29 @@ void h_avc_decode_mode(Cpu& c) {
   ret(c, 0);
 }
 
-// There is no ATRAC3+ decoder yet, so movie audio plays back as silence with correct timing.
+// The ES is an ATRAC3+ frame; the decoded 2048 sample stereo block is what the game expects in kAtracOutSize.
 void h_atrac_decode(Cpu& c) {
   Context* x = ctx_of(arg(c, 0));
   if (x) pace(c, *x, x->audioPts);
   uint32_t buf = arg(c, 2);
-  if (buf) std::memset(ptr(buf), 0, kAtracOutSize);
+  if (!buf) return ret(c, 0);
+  int16_t out[atrac::kPlusSamplesPerFrame * 2] = {};
+  if (x && x->haveAudio) {
+    x->haveAudio = false;
+    int ch = x->audioChannels;
+    if (x->atracChannels != ch) {
+      x->atracChannels = ch;
+      x->atracOk = x->atrac.init(ch);
+    }
+    int16_t pcm[atrac::kPlusSamplesPerFrame * 2];
+    if (x->atracOk && x->atrac.decode_frame(x->audio.data.data(), x->audio.data.size(), pcm)) {
+      for (int i = 0; i < atrac::kPlusSamplesPerFrame; ++i) {
+        out[i * 2] = pcm[i * ch];
+        out[i * 2 + 1] = pcm[i * ch + (ch - 1)];
+      }
+    }
+  }
+  std::memcpy(ptr(buf), out, sizeof(out));
   ret(c, 0);
 }
 

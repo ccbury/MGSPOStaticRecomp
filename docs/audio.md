@@ -38,11 +38,30 @@ independent decoder on a real stream and the output matched sample for sample (a
 queries. Streams are expected to be fully resident; the streaming functions (`AddStreamData` and friends)
 are not provided because the game does not call them.
 
-ATRAC3+ (wave format tag 0xFFFE) is recognised, so setting the data returns an id, but it decodes to silence.
-A real ATRAC3+ decoder is the main piece of audio work left. A small ATRAC3+ blob does appear next to
-the ATRAC3 data in some BGM containers.
+ATRAC3+ (wave format tag 0xFFFE) goes through `atrac3plus.cpp`, a mono/stereo decoder that produces 2048 samples
+per frame. The bitstream parser (`atrac3p/bitstream.cpp`), the synthesis DSP (`atrac3p/dsp.cpp`) and the
+Huffman/spectral tables are taken from FFmpeg's libavcodec ATRAC3+ decoder (Maxim Poliakovski, LGPL-2.1-or-later).
+The format has far too many code tables to reasonably retype, so that code is vendored with only include and
+helper changes; `atrac3p/compat.{h,cpp}` supplies the few FFmpeg helpers it needs (bit reader, VLC tables,
+sine windows, a plain IMDCT). See `runtime/src/atrac3p/README.md` for provenance and `COPYING.LGPL-2.1` for
+the licence. `atrac3plus.cpp` is our own front end: frame decode, spectrum reconstruction, and float to
+int16 conversion. A corrupt frame returns false and produces silence. Limitations: no extension channel
+units (more than 2 channels) and no GHA amplitude mode 0, same as the FFmpeg decoder.
+
+The decoder is used by `sceAtracDecodeData` (including seeks, which re-run the previous frames to rebuild
+the overlap state) and by `sceMpegAtracDecode`, which decodes the ATRAC3+ access units demuxed from PSMF
+movies. Frames are 744 bytes in the movies I looked at.
+
+### Verification
+
+Decoding `SND0.AT3` (181 frames, stereo) and the audio of a movie (300 access units, wrapped in an at3
+container) gave output within 1 LSB of ffmpeg's `atrac3plus` decoder over the whole stream. All access units
+in the movies tried decode without errors. `mgspo-at3dec in.at3 out.wav` decodes a file for comparison.
+The audio test also does this check when `MGSPO_AT3_FILE` (an .at3) and `MGSPO_AT3_REF` (a WAV from another
+decoder) are set; without them only the synthetic cases run, so no game data is needed or committed.
 
 ## Tests
 
-`mgspo-audio-tests` covers the ADPCM decoder, envelopes, voice mixing and end flags, the ATRAC RIFF parser
-and the HLE entry points. No game data is used.
+`mgspo-audio-tests` covers the ADPCM decoder, envelopes, voice mixing and end flags, the ATRAC RIFF parser,
+ATRAC3+ error handling and the HLE entry points. No game data is used unless the environment variables above
+are set.

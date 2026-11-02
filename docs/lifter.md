@@ -137,7 +137,7 @@ Known simplifications:
 - GE rendering is implemented against synthetic lists only (`docs/ge.md`); it has not been checked
   against the real game yet.
 - The per-stage PRXs and encrypted helper modules (`libfont` etc.) are not lifted. Net libraries
-  return an error. ATRAC3+ streams are not decoded (see [audio.md](audio.md)).
+  return an error. ATRAC3+ is decoded natively (see [audio.md](audio.md)).
 - Naming NIDs (output uses `module:NID`).
 - Function boundary detection is heuristic; 142 code words are not covered by any function
   (the gaps between import stubs and the code around them have not been inspected yet).

@@ -31,7 +31,6 @@ implementing `mpeg::VideoDecoder`.
 
 ## Not done
 
-- ATRAC3+ audio: the frames are demuxed and paced but not decoded (`atrac3.cpp` handles ATRAC3
-  only), so `sceMpegAtracDecode` outputs silence.
+- Movie audio is decoded with the ATRAC3+ decoder (see [audio.md](audio.md)); only stereo/mono streams.
 - No frame pacing in the HLE; playback speed depends on the game's own timing (not measured yet).
 - Decoder latency is not drained at end of stream, so the last few pictures may be dropped.
