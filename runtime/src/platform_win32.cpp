@@ -254,5 +254,70 @@ bool audio_start(int rate, AudioFill fill) {
 
 void audio_stop() { g_audioRun = false; }
 
+namespace {
+HDC g_fontDc = nullptr;
+HFONT g_font = nullptr;
+int g_fontPx = 0;
+
+bool select_font(int px) {
+  if (!g_fontDc) g_fontDc = CreateCompatibleDC(nullptr);
+  if (!g_fontDc) return false;
+  if (g_fontPx != px) {
+    HFONT f = CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                          CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+    if (!f) return false;
+    SelectObject(g_fontDc, f);
+    if (g_font) DeleteObject(g_font);
+    g_font = f;
+    g_fontPx = px;
+  }
+  return true;
+}
+}  // namespace
+
+bool glyph_raster(uint32_t cp, int px, Glyph& g) {
+  static std::mutex m;
+  std::lock_guard<std::mutex> lk(m);
+  if (!select_font(px)) return false;
+  const MAT2 ident = {{0, 1}, {0, 0}, {0, 0}, {0, 1}};
+  GLYPHMETRICS gm{};
+  DWORD size = GetGlyphOutlineW(g_fontDc, cp, GGO_GRAY8_BITMAP, &gm, 0, nullptr, &ident);
+  if (size == GDI_ERROR) return false;
+  g.advance = static_cast<float>(gm.gmCellIncX);
+  g.width = static_cast<int>(gm.gmBlackBoxX);
+  g.height = static_cast<int>(gm.gmBlackBoxY);
+  g.left = gm.gmptGlyphOrigin.x;
+  g.top = gm.gmptGlyphOrigin.y;
+  g.alpha.assign(static_cast<size_t>(g.width) * g.height, 0);
+  if (size == 0 || g.width == 0 || g.height == 0) {
+    g.width = g.height = 0;
+    g.alpha.clear();
+    return true;
+  }
+  std::vector<uint8_t> raw(size);
+  if (GetGlyphOutlineW(g_fontDc, cp, GGO_GRAY8_BITMAP, &gm, size, raw.data(), &ident) == GDI_ERROR) return false;
+  size_t pitch = (static_cast<size_t>(g.width) + 3) & ~3u;
+  for (int y = 0; y < g.height; ++y)
+    for (int x = 0; x < g.width; ++x)
+      g.alpha[static_cast<size_t>(y) * g.width + x] =
+          static_cast<uint8_t>(std::min(255, raw[y * pitch + x] * 255 / 64));
+  return true;
+}
+
+FontMetrics font_metrics(int px) {
+  static std::mutex m;
+  std::lock_guard<std::mutex> lk(m);
+  FontMetrics fm;
+  TEXTMETRICW tm{};
+  if (select_font(px) && GetTextMetricsW(g_fontDc, &tm)) {
+    fm.ascent = static_cast<float>(tm.tmAscent);
+    fm.descent = static_cast<float>(tm.tmDescent);
+    fm.maxAdvance = static_cast<float>(tm.tmMaxCharWidth);
+  } else {
+    fm = {px * 0.8f, px * 0.2f, px * 0.6f};
+  }
+  return fm;
+}
+
 }  // namespace plat
 }  // namespace psp

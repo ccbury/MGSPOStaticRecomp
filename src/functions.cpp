@@ -20,6 +20,7 @@ bool looksLikeStart(const PrxImage& img, uint32_t addr, bool afterJump = false) 
   }
   if (p < img.base + 4) return true;
   if (img.word(p - 4) == kJrRa) return true;
+  if (afterJump && ((img.word(p - 4) >> 26) == 2 || (img.word(p - 4) >> 16) == 0x1000)) return true;
   if (p < img.base + 8) return false;
   uint32_t prev = img.word(p - 8);
   if (prev == kJrRa) return true;
@@ -96,7 +97,10 @@ Program discover(const PrxImage& img, uint32_t importBase) {
           }
           break;
         case Op::J:
-          if (img.inCode(in.target) && !prog.isStub(in.target)) jumpCandidates.insert(in.target);
+          if (img.inCode(in.target) && !prog.isStub(in.target)) {
+            jumpCandidates.insert(in.target);
+            branchRefs.emplace_back(a, in.target);
+          }
           break;
         case Op::Beq: case Op::Bne: case Op::Blez: case Op::Bgtz: case Op::Beql: case Op::Bnel:
         case Op::Blezl: case Op::Bgtzl: case Op::Bltz: case Op::Bgez: case Op::Bltzl: case Op::Bgezl:
@@ -124,18 +128,19 @@ Program discover(const PrxImage& img, uint32_t importBase) {
   }
   // A branch that lands in a different function right after a return is really a tail jump to a
   // function that nothing else points at.
+  // Adding a root can split a function that other branches stay inside of, so repeat until stable.
+  for (bool changed = true; changed;) {
+  changed = false;
   for (const auto& br : branchRefs) {
     uint32_t t = br.second;
     if (roots.count(t) || prog.isStub(t)) continue;
     auto ts = roots.upper_bound(t);
     auto ss = roots.upper_bound(br.first);
     if (ts == roots.begin() || ss == roots.begin() || *std::prev(ts) == *std::prev(ss)) continue;
-    uint32_t p = t;
-    while (p >= img.base + 4 && img.word(p - 4) == 0 && t - p < 256) p -= 4;
-    if (p >= img.base + 8 && (img.word(p - 4) == kJrRa || img.word(p - 8) == kJrRa)) {
-      roots.insert(t);
-      ++st.jumpRoots;
-    }
+    roots.insert(t);
+    ++st.jumpRoots;
+    changed = true;
+  }
   }
   st.roots = static_cast<uint32_t>(roots.size());
 

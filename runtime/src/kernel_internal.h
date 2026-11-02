@@ -148,6 +148,7 @@ void ge_init();
 void register_audio();
 void audio_init();
 void register_misc();
+void register_font();
 
 }  // namespace k
 }  // namespace psp

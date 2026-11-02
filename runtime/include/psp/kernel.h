@@ -9,6 +9,8 @@ namespace psp {
 
 struct KernelConfig {
   std::string discRoot;             // directory that contains PSP_GAME (the extracted disc)
+  std::string discImage;            // the .iso itself; needed for raw sce_lbn reads (disc0:/sce_lbn0x..._size0x...)
+  std::string moduleDir;            // optional folder of already-decrypted helper modules, used instead of the disc copies
   std::string saveRoot = "savedata";  // backs ms0:/
   bool headless = false;            // no window, no audio device
   bool trace = false;               // log every import call

@@ -15,6 +15,7 @@ namespace {
 struct Registered {
   HleFn fn = nullptr;
   std::string name;
+  bool soft = false;
 };
 
 std::map<std::pair<std::string, uint32_t>, Registered> g_registered;
@@ -30,6 +31,7 @@ size_t g_unresolved = 0;
 void (*g_poll)(Cpu&) = nullptr;
 bool g_trace = false;
 uint32_t (*g_linker)(const char*, uint32_t) = nullptr;
+std::vector<uint8_t> g_soft;    // handlers that a loaded module's export overrides
 std::vector<uint8_t> g_linked;  // imports that were forwarded to a loaded module
 
 std::string hex(uint32_t v) {
@@ -46,6 +48,11 @@ void register_hle(const char* module, uint32_t nid, const char* name, HleFn fn) 
   Registered& r = g_registered[{module, nid}];
   r.fn = fn;
   r.name = name;
+}
+
+void register_hle_soft(const char* module, uint32_t nid, const char* name, HleFn fn) {
+  register_hle(module, nid, name, fn);
+  g_registered[{module, nid}].soft = true;
 }
 
 void register_hle_fallback(const char* module, HleFn fn) { g_fallbacks[module] = fn; }
@@ -67,12 +74,14 @@ void bind_tables(const FuncEntry* funcs, size_t funcCount, const ImportEntry* im
   g_handlers.assign(importCount, nullptr);
   g_calls.assign(importCount, 0);
   g_linked.assign(importCount, 0);
+  g_soft.assign(importCount, 0);
   g_order.clear();
   g_unresolved = 0;
   for (size_t i = 0; i < importCount; ++i) {
     auto it = g_registered.find({imports[i].module, imports[i].nid});
     if (it != g_registered.end()) {
       g_handlers[i] = it->second.fn;
+      g_soft[i] = it->second.soft;
     } else {
       auto fb = g_fallbacks.find(imports[i].module);
       if (fb != g_fallbacks.end()) g_handlers[i] = fb->second;
@@ -90,6 +99,13 @@ void hle(Cpu& c, uint32_t idx) {
     const char* n = hle_name(imp.module, imp.nid);
     std::fprintf(stderr, "[hle] %s:%08X %s(%X, %X, %X, %X)\n", imp.module, imp.nid, n ? n : "?", c.r[4], c.r[5],
                  c.r[6], c.r[7]);
+  }
+  if (fn && g_soft[idx] && g_linker) {
+    if (uint32_t target = g_linker(imp.module, imp.nid)) {
+      g_linked[idx] = 1;
+      call(c, target);
+      return;
+    }
   }
   if (fn) {
     fn(c);

@@ -67,6 +67,7 @@ void register_all_hle() {
   k::register_ge();
   k::register_audio();
   k::register_misc();
+  k::register_font();
 }
 
 }  // namespace psp
