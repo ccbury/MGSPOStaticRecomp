@@ -59,8 +59,19 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         bi.bmiHeader.biPlanes = 1;
         bi.bmiHeader.biBitCount = 32;
         bi.bmiHeader.biCompression = BI_RGB;
-        SetStretchBltMode(dc, COLORONCOLOR);
-        StretchDIBits(dc, 0, 0, rc.right, rc.bottom, 0, 0, kW, kH, g_frame.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+        SetStretchBltMode(dc, (rc.right >= kW * 2) ? COLORONCOLOR : HALFTONE);
+        SetBrushOrgEx(dc, 0, 0, nullptr);
+        // keep the 480x272 aspect ratio and fill the rest with black
+        int dw = rc.right, dh = rc.bottom;
+        if (dw * kH > dh * kW) dw = dh * kW / kH;
+        else dh = dw * kH / kW;
+        int dx = (rc.right - dw) / 2, dy = (rc.bottom - dh) / 2;
+        PatBlt(dc, 0, 0, rc.right, dy, BLACKNESS);
+        PatBlt(dc, 0, dy + dh, rc.right, rc.bottom - dy - dh, BLACKNESS);
+        PatBlt(dc, 0, dy, dx, dh, BLACKNESS);
+        PatBlt(dc, dx + dw, dy, rc.right - dx - dw, dh, BLACKNESS);
+        if (dw > 0 && dh > 0)
+          StretchDIBits(dc, dx, dy, dw, dh, 0, 0, kW, kH, g_frame.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
       }
       EndPaint(h, &ps);
       return 0;

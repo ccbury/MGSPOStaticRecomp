@@ -43,7 +43,8 @@
 | `threadman.cpp` | threads, semaphores, event flags, mutexes, message boxes, fixed/variable pools, callbacks, timers, interrupts |
 | `io.cpp` | `sceIo*`; `disc0:/` maps to the extracted disc (read only), `ms0:/` to the save folder |
 | `display.cpp` | framebuffer, vblank, `sceCtrl` |
-| `ge.cpp` | `sceGe_user`: walks display lists and fires signal/finish callbacks, no rendering |
+| `ge.cpp` | `sceGe_user`: list queue, sync and callbacks (see `docs/ge.md`) |
+| `gpu.cpp`, `gpu_draw.cpp` | GE command interpreter and software rasteriser that draws into emulated VRAM |
 | `audio.cpp` | `sceAudio` channels mixed into a FIFO |
 | `misc.cpp` | module manager, loadexec, rtc, utility, umd, power and the rest |
 | `platform_win32.cpp` | window, keyboard/XInput, waveOut. `platform_null.cpp` is used for headless builds |
@@ -131,9 +132,10 @@ Known simplifications:
 
 ## Not done yet
 
-- GE rendering. Lists are accepted and finished, nothing is drawn.
-- The per-stage PRXs and the encrypted helper modules (`libfont` etc.) are not lifted. Net
-  libraries return an error. `sceSasCore` and `sceAtrac3plus` are not implemented.
+- GE rendering is implemented against synthetic lists only (`docs/ge.md`); it has not been checked
+  against the real game yet.
+- The per-stage PRXs and encrypted helper modules (`libfont` etc.) are not lifted. Net libraries
+  return an error. `sceSasCore` and `sceAtrac3plus` are not implemented.
 - Naming NIDs (output uses `module:NID`).
 - Function boundary detection is heuristic; 142 code words are not covered by any function
   (the gaps between import stubs and the code around them have not been inspected yet).
