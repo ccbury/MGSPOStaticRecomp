@@ -54,15 +54,17 @@ add_library(mgspo_rt STATIC
   runtime/src/atrac3.cpp
   runtime/src/atrac.cpp
   runtime/src/misc.cpp
+  runtime/src/mpeg.cpp
+  runtime/src/mpeg_demux.cpp
   runtime/src/font.cpp
   runtime/src/modules.cpp
   runtime/src/vfpu.cpp
 )
 if(WIN32)
-  target_sources(mgspo_rt PRIVATE runtime/src/platform_win32.cpp)
-  target_link_libraries(mgspo_rt PUBLIC user32 gdi32 winmm)
+  target_sources(mgspo_rt PRIVATE   runtime/src/platform_win32.cpp runtime/src/video_decoder_mf.cpp)
+    target_link_libraries(mgspo_rt PUBLIC user32 gdi32 winmm mfplat mfuuid ole32)
 else()
-  target_sources(mgspo_rt PRIVATE runtime/src/platform_null.cpp)
+  target_sources(mgspo_rt PRIVATE runtime/src/platform_null.cpp runtime/src/video_decoder_null.cpp)
   find_package(Threads REQUIRED)
   target_link_libraries(mgspo_rt PUBLIC Threads::Threads)
 endif()
@@ -109,4 +111,7 @@ if(MGSPO_BUILD_TESTS)
   target_link_libraries(mgspo-audio-tests PRIVATE mgspo_rt)
   target_include_directories(mgspo-audio-tests PRIVATE runtime/src)
   add_test(NAME mgspo-audio-tests COMMAND mgspo-audio-tests)
+  add_executable(mgspo-mpeg-tests tests/test_mpeg.cpp runtime/src/mpeg_demux.cpp)
+  target_include_directories(mgspo-mpeg-tests PRIVATE runtime/src)
+  add_test(NAME mgspo-mpeg-tests COMMAND mgspo-mpeg-tests)
 endif()

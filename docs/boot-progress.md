@@ -111,8 +111,9 @@ not done by default.
 ## Where it stops
 
 With the init, r_main01/02, r_net01, gsmenu and title stages lifted the game loads three stages,
-inflates the big stage archive and then runs without faulting (checked up to 100 s headless). The
-screen stays black: the game sits in the intro movie loop waiting on `sceMpeg`.
+inflates the big stage archive, plays the intro movie and reaches the title screen ("PRESS START
+BUTTON" over the red camera background, drawn from the decoded movie frames). It runs without
+faulting (checked up to 100 s headless). Movie playback is described in [movies.md](movies.md).
 
 Faults found and fixed on the way:
 
@@ -133,20 +134,23 @@ Faults found and fixed on the way:
   (`begin()` failed for every draw). Addresses below 2 MB with no region bits are now treated as
   VRAM. Triangles and sprites now rasterise (tens of thousands per run, none culled).
 
-What the screen shows: black. The draws that do reach the framebuffer are full-screen fade quads
-(alpha ramping up) over a black background, i.e. the logo/intro sequence has nothing to show
-because the movie is not played.
+What the screen shows: the intro movie plays through (about 280 pictures) and the game then sits on
+the title screen. `--auto-press 0x4000` (Cross only) stays there. Pressing Start (`0x8`) skips the
+movie if it is still playing; on the title screen it leads to a black screen, and with
+`--auto-press 0x4008` to a full-screen black/white dither pattern. The game keeps running frames
+in both cases (hundreds of GE lists, sas voices, no faults, no new stage loaded), so this looks
+like a rendering problem in the post-title screen, not a hang. Not investigated further yet.
 
 Next blockers, roughly in order:
 
-1. **sceMpeg.** The intro movie needs PSMF demuxing plus an H.264 decoder. The player set-up calls
-   (Init, Create, RegistStream, ...) are implemented as stubs and `sceMpegGetAvcAu`,
-   `sceMpegAvcDecode`, `sceMpegGetAtracAu` and `sceMpegAtracDecode` report "no data"; the game
-   then polls forever and never leaves the movie state (Start/Cross/Circle do not skip it).
-   Either decode the movies or find out what makes the game skip them.
+1. **Screen after Start.** See above. Dump the GE commands of one frame (`--ge-dump`) and check
+   texture format 4 (swizzled CLUT8) and format 5 uploads, the CLUT loads and the sprite draws
+   in 5551 framebuffers first.
 2. **More stages.** Each new stage the game requests that is not lifted shows up as `not lifted`
    with its size; add it with `--stage`. Jump-table style stubs reached by computed jumps can still
    be missing from function discovery.
-3. **Textured output** has not been verified yet, since nothing non-black is drawn before the movie.
+3. **Movie audio.** The movie's ATRAC3+ stream is demuxed and paced (`sceMpegGetAtracAu` /
+   `sceMpegAtracDecode` run in step with the video) but there is no ATRAC3+ decoder, so it plays as
+   silence.
 4. **Network imports** (sceNet*, sceHttp) used by stages need stubs that report no connection.
 5. **Audio**: `sceSasCore`/`sceAtrac3plus` coverage.
