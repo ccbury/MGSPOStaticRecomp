@@ -34,6 +34,7 @@ struct PrxImage {
   uint32_t entry = 0;
   uint32_t gp = 0;
   std::vector<CodeRange> code;           // executable sections, stub tables excluded
+  std::vector<uint32_t> extraRoots;      // further known function entry points (e.g. called from other modules)
   std::vector<uint32_t> exportedFuncs;   // absolute addresses of exported functions
   std::vector<ExportedFunc> exports;     // every exported function with its library and NID
   std::set<uint32_t> addressTaken;       // code addresses produced by relocations

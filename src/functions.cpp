@@ -70,6 +70,8 @@ Program discover(const PrxImage& img, uint32_t importBase) {
   if (img.inCode(img.entry)) roots.insert(img.entry);
   for (uint32_t e : img.exportedFuncs)
     if (img.inCode(e)) roots.insert(e);
+  for (uint32_t e : img.extraRoots)
+    if (img.inCode(e) && (e & 3) == 0) roots.insert(e);
 
   for (const auto& r : img.code) {
     for (uint32_t a = r.start; a + 4 <= r.end; a += 4) {
@@ -84,7 +86,10 @@ Program discover(const PrxImage& img, uint32_t importBase) {
           ++st.vfpuInsns;
           if (decodeVfpu(in.raw) == psp::vfpu::Op::Invalid) ++st.vfpuUndecoded;
           break;
-        case Op::Bvf: case Op::Bvt: case Op::Bvfl: case Op::Bvtl: ++st.vfpuBranches; break;
+        case Op::Bvf: case Op::Bvt: case Op::Bvfl: case Op::Bvtl:
+          ++st.vfpuBranches;
+          if (img.inCode(in.target)) branchRefs.emplace_back(a, in.target);
+          break;
         case Op::Cop0: ++st.cop0Insns; break;
         case Op::Unknown:
         case Op::Invalid: ++st.unknownInsns; break;
@@ -104,6 +109,7 @@ Program discover(const PrxImage& img, uint32_t importBase) {
           break;
         case Op::Beq: case Op::Bne: case Op::Blez: case Op::Bgtz: case Op::Beql: case Op::Bnel:
         case Op::Blezl: case Op::Bgtzl: case Op::Bltz: case Op::Bgez: case Op::Bltzl: case Op::Bgezl:
+        case Op::Bc1f: case Op::Bc1t: case Op::Bc1fl: case Op::Bc1tl:
           if (img.inCode(in.target)) branchRefs.emplace_back(a, in.target);
           break;
         default: break;
@@ -118,7 +124,19 @@ Program discover(const PrxImage& img, uint32_t importBase) {
       ++st.jumpRoots;
     }
   }
-  for (uint32_t t : img.addressTaken) {
+  // Functions that are only ever called through pointers built at run time still start with the
+  // usual stack frame setup, right after the previous function's return (or a tail jump) and its delay slot.
+  for (const auto& r : img.code) {
+    for (uint32_t a = r.start + 8; a + 4 <= r.end; a += 4) {
+      uint32_t w = img.word(a), prev = img.word(a - 8);
+      bool prologue = (w >> 16) == 0x27BD && (w & 0x8000) != 0;
+      bool endsBlock = prev == kJrRa || (prev >> 16) == 0x1000 || (prev >> 26) == 2;
+      if (prologue && endsBlock && !roots.count(a) && !prog.isStub(a)) {
+        roots.insert(a);
+        ++st.pointerRoots;
+      }
+    }
+  }  for (uint32_t t : img.addressTaken) {
     if (roots.count(t) || img.jumpTargets.count(t) || prog.isStub(t)) continue;
     if (!img.inCode(t)) continue;
     if (looksLikeStart(img, t, true)) {
@@ -142,7 +160,27 @@ Program discover(const PrxImage& img, uint32_t importBase) {
     changed = true;
   }
   }
-  st.roots = static_cast<uint32_t>(roots.size());
+  // A switch case can only be reached from inside the function that holds the dispatching jr. When
+  // the function was split so that a case ended up in a piece without one, it has to be an entry point.
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (uint32_t t : img.jumpTargets) {
+      if (roots.count(t) || !img.inCode(t)) continue;
+      auto nx = roots.upper_bound(t);
+      uint32_t lo = *std::prev(nx);
+      uint32_t hi = nx != roots.end() ? *nx : img.code.back().end;
+      bool dispatch = false;
+      for (uint32_t a = lo; a < hi && !dispatch; a += 4) {
+        uint32_t w = img.word(a);
+        dispatch = (w >> 26) == 0 && (w & 0x3F) == 8 && ((w >> 21) & 31) != 31;
+      }
+      if (!dispatch) {
+        roots.insert(t);
+        ++st.jumpRoots;
+        changed = true;
+      }
+    }
+  }  st.roots = static_cast<uint32_t>(roots.size());
 
   // Boundaries that terminate a function even when they are not roots.
   std::set<uint32_t> stops(roots);

@@ -2,6 +2,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "cpu.h"
+
 namespace psp {
 
 struct ModuleExport {
@@ -22,6 +24,12 @@ struct ModuleDesc {
   uint32_t gp;
   const ModuleExport* exports;
   size_t exportCount;
+  uint64_t hash;  // content hash of the module file, 0 if it is only matched by name
+  // Overlay modules only: functions by address and the import stubs inside the image.
+  const FuncEntry* funcs;
+  size_t funcCount;
+  const StubEntry* stubs;
+  size_t stubCount;
 };
 
 }  // namespace psp

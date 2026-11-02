@@ -165,7 +165,7 @@ void register_misc() {
   register_hle("sceUtility", 0xA5DA2406, "sceUtilityGetSystemParamInt", h_sysparam_int);
   register_hle("sceUtility", 0x34B78343, "sceUtilityGetSystemParamString", h_sysparam_string);
   register_hle("sceUtility", 0xC629AF26, "sceUtilityLoadAvModule", h_zero);
-
+    register_hle("sceUtility", 0x9A1C91D7, "sceUtility_9A1C91D7", h_zero);
   register_hle("scePower", 0x04B7766E, "scePowerRegisterCallback", h_zero);
   register_hle("sceImpose", 0x36AA6E91, "sceImposeSetLanguageMode", h_zero);
   register_hle("sceOpenPSID", 0xC69BEBCE, "sceOpenPSIDGetOpenPSID", h_openpsid);
