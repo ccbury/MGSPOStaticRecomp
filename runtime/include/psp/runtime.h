@@ -15,6 +15,10 @@ void register_hle(const char* module, uint32_t nid, HleFn fn);
 // Same, with a function name that shows up in logs and the import report.
 void register_hle(const char* module, uint32_t nid, const char* name, HleFn fn);
 
+// Like register_hle, but if a lifted module that was loaded exports the same library/NID, the
+// module's code is called instead. Used for replacements of firmware modules that a user may supply.
+void register_hle_soft(const char* module, uint32_t nid, const char* name, HleFn fn);
+
 // Handler for every import of a library that has no handler of its own.
 void register_hle_fallback(const char* module, HleFn fn);
 

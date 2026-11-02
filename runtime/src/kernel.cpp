@@ -71,6 +71,7 @@ void register_all_hle() {
   k::register_sas();
   k::register_atrac();
   k::register_misc();
+  k::register_font();
 }
 
 }  // namespace psp

@@ -54,6 +54,8 @@ and `eboot` falls back to it automatically. Otherwise point `analyze` at a decry
 
 ```
 mgspo-lift <boot.elf> <outdir>            write C++ sources, one function per guest function
+mgspo-lift <boot.elf> <outdir> --helper <mod.prx>   also lift an extra plain-ELF module (repeatable)
+mgspo-lift <boot.elf> <outdir> --helper-dir <dir>   same, for every plain-ELF module in a folder
 mgspo-lift <boot.elf> --stats             function discovery numbers only
 mgspo-lift <boot.elf> --disasm <addr> <n> disassemble n words from a guest address
 ```
@@ -66,14 +68,16 @@ to build it into a runnable exe, configure with `-DMGSPO_GENERATED_DIR=<outdir>`
 ## mgspo-game
 
 ```
-mgspo-game <boot.elf> [--disc <dir>] [--save <dir>] [--headless] [--trace]
-                      [--report <file>] [--timeout <sec>]
+mgspo-game <boot.elf> [--disc <dir>] [--iso <file>] [--modules <dir>] [--save <dir>]
+                      [--headless] [--trace] [--report <file>] [--timeout <sec>]
 ```
 
 `--disc` is the extracted disc (the folder that contains `PSP_GAME`), served to the game as
 `disc0:/` (read only). `--save` is a plain folder backing `ms0:/`. Without `--headless` you get a
 window (2x) with keyboard or XInput controls: arrows = d-pad, Z/X/A/S = cross/circle/square/triangle,
 Q/E = L/R, Enter = start, Right Shift = select, IJKL = analog stick.
+
+The game also reads the disc by raw sector (`sce_lbn0x<lba>_size0x<sectors>`), so pass `--iso` as well to serve those. `--modules` points at a folder of already decrypted modules; see [docs/boot-progress.md](docs/boot-progress.md).
 
 Every import the game calls without an implementation is logged once with its module and NID.
 `--report` writes all imports in order of first call with call counts, which is the list to work

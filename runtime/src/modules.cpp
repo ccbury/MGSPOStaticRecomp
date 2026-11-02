@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 
@@ -61,6 +63,22 @@ uint32_t find_export(const char* lib, uint32_t nid) {
   return 0;
 }
 
+// Reads a module from the user-supplied decrypted module directory, if there is one.
+bool read_user_module(const std::string& path, std::vector<uint8_t>& out) {
+  std::string dir = config().moduleDir;
+  if (dir.empty()) return false;
+  if (dir.back() != '/' && dir.back() != '\\') dir += '/';
+  size_t i = path.find_last_of("/\\:");
+  std::ifstream in(dir + (i == std::string::npos ? path : path.substr(i + 1)), std::ios::binary);
+  if (!in) return false;
+  out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  return true;
+}
+
+bool is_encrypted(const std::vector<uint8_t>& f) {
+  return f.size() >= 4 && f[0] == '~' && f[1] == 'S' && f[2] == 'C';
+}
+
 uint32_t load_module(const std::string& path) {
   const ModuleDesc* d = desc_for_path(path);
   if (!d) {
@@ -73,7 +91,15 @@ uint32_t load_module(const std::string& path) {
   if (already != g_loaded.end()) return static_cast<uint32_t>(already->second);
 
   std::vector<uint8_t> file;
-  if (!io_read_file(path, file)) return E_NO_FILE;
+  bool fromUser = read_user_module(path, file);
+  if (!fromUser && !io_read_file(path, file)) return E_NO_FILE;
+  if (is_encrypted(file)) {
+    // Nothing to map; the runtime's replacement library services this module's imports.
+    int32_t id = alloc_uid();
+    g_modules[id] = {path, nullptr, false};
+    std::fprintf(stderr, "[module] load %s -> %X (encrypted, runtime replacement is used)\n", path.c_str(), id);
+    return static_cast<uint32_t>(id);
+  }
   try {
     mgspo::PrxImage img = mgspo::loadPrx(file, d->base);
     if (img.mem.size() != d->size) {
@@ -89,7 +115,8 @@ uint32_t load_module(const std::string& path) {
   int32_t id = alloc_uid();
   g_modules[id] = {path, d, false};
   g_loaded[d] = id;
-  std::fprintf(stderr, "[module] load %s -> %X (%s at %08X)\n", path.c_str(), id, d->name, d->base);
+  std::fprintf(stderr, "[module] load %s -> %X (%s at %08X%s)\n", path.c_str(), id, d->name, d->base,
+               fromUser ? ", user supplied" : "");
   return static_cast<uint32_t>(id);
 }
 

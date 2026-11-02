@@ -1,16 +1,19 @@
 // IoFileMgrForUser. disc0:/ maps to the extracted disc, ms0:/ to a local save folder.
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <system_error>
 #include <vector>
 
 #include <sys/stat.h>
 
+#include "iso.h"
 #include "kernel_internal.h"
 
 namespace fs = std::filesystem;
@@ -27,6 +30,8 @@ struct File {
   std::string vpath;
   bool append = false;
   bool canWrite = false;
+  int64_t offset = 0;  // window into the disc image for sce_lbn paths
+  int64_t limit = -1;
 };
 
 struct Dir {
@@ -112,6 +117,28 @@ void fill_date(uint32_t p, time_t t) {
   sw(p + 12, 0);
 }
 
+// The game addresses disc files by sector (disc0:/sce_lbn...), taking the start sector from
+// st_private[0] of the stat/dirent. Look it up in the disc image, if one was given.
+uint32_t disc_lba(const fs::path& path) {
+  static std::unique_ptr<mgspo::IsoImage> iso;
+  static bool tried = false;
+  if (!tried) {
+    tried = true;
+    if (!config().discImage.empty()) {
+      try {
+        iso = std::make_unique<mgspo::IsoImage>(config().discImage);
+      } catch (const std::exception&) {
+      }
+    }
+  }
+  if (!iso) return 0;
+  std::error_code ec;
+  std::string rel = fs::relative(path, config().discRoot, ec).generic_string();
+  if (ec) return 0;
+  const mgspo::IsoEntry* e = iso->find(rel);
+  return e ? e->lba : 0;
+}
+
 // SceIoStat is 88 bytes: mode, attr, size(8), ctime/atime/mtime (16 each), 6 reserved words.
 bool fill_stat(uint32_t p, const fs::path& path, bool writable) {
 #ifdef _WIN32
@@ -130,11 +157,41 @@ bool fill_stat(uint32_t p, const fs::path& path, bool writable) {
   fill_date(p + 16, static_cast<time_t>(st.st_ctime));
   fill_date(p + 32, static_cast<time_t>(st.st_atime));
   fill_date(p + 48, static_cast<time_t>(st.st_mtime));
+  if (!writable) sw(p + 64, disc_lba(path));
   return true;
 }
 
+// disc0:/sce_lbn0x<lba>_size0x<sectors> addresses a raw range of the disc image.
+bool parse_lbn_path(const std::string& vpath, uint32_t& lba, uint32_t& sectors) {
+  std::string s = lower(vpath);
+  size_t colon = s.find(':');
+  if (colon == std::string::npos || s.compare(0, colon, "disc0") != 0) return false;
+  size_t i = colon + 1;
+  while (i < s.size() && s[i] == '/') ++i;
+  return std::sscanf(s.c_str() + i, "sce_lbn0x%x_size0x%x", &lba, &sectors) == 2;
+}
+
 int open_file(const std::string& vpath, uint32_t flags, uint32_t& err) {
-  fs::path path;
+  uint32_t lba = 0, sectors = 0;
+  if (parse_lbn_path(vpath, lba, sectors)) {
+    if (config().discImage.empty()) {
+      err = E_IO_NOENT;
+      return -1;
+    }
+    FILE* f = std::fopen(config().discImage.c_str(), "rb");
+    if (!f) {
+      err = E_IO_NOENT;
+      return -1;
+    }
+    int fd = g_nextFd++;
+    File& file = g_files[fd];
+    file.f = f;
+    file.vpath = vpath;
+    file.offset = static_cast<int64_t>(lba) * 2048;
+    file.limit = static_cast<int64_t>(sectors) * 2048;
+    SEEK64(f, file.offset, SEEK_SET);
+    return fd;
+  }  fs::path path;
   bool writable = false;
   if (!resolve(vpath, path, writable)) {
     err = E_IO_NODEV;
@@ -185,7 +242,14 @@ int64_t do_read(int fd, uint32_t buf, uint32_t size) {
   if (it == g_files.end()) return static_cast<int32_t>(E_IO_BADF);
   if (!size) return 0;
   ptr(buf + size - 1);
-  return static_cast<int64_t>(std::fread(ptr(buf), 1, size, it->second.f));
+  File& file = it->second;
+  if (file.limit >= 0) {
+    int64_t pos = TELL64(file.f) - file.offset;
+    int64_t left = std::max<int64_t>(0, file.limit - pos);
+    size = static_cast<uint32_t>(std::min<int64_t>(size, left));
+    if (!size) return 0;
+  }
+  return static_cast<int64_t>(std::fread(ptr(buf), 1, size, file.f));
 }
 
 int64_t do_write(int fd, uint32_t buf, uint32_t size) {
@@ -229,7 +293,14 @@ void set_async(Cpu& c, int fd, int64_t res) {
 
 void h_open(Cpu& c) {
   uint32_t err = 0;
-  int fd = open_file(cstr(arg(c, 0)), arg(c, 1), err);
+  std::string vpath = cstr(arg(c, 0));
+  int fd = open_file(vpath, arg(c, 1), err);
+  if (config().trace) std::fprintf(stderr, "[io] open %s -> %d\n", vpath.c_str(), fd);
+  if (fd < 0) {
+    static std::set<std::string> reported;
+    if (reported.insert(vpath).second)
+      std::fprintf(stderr, "[io] sceIoOpen(%s, flags %X) failed: %08X\n", vpath.c_str(), arg(c, 1), err);
+  }
   ret(c, fd < 0 ? err : static_cast<uint32_t>(fd));
 }
 

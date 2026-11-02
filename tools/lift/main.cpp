@@ -1,4 +1,6 @@
 // mgspo-lift: turn a PSP PRX/ELF into C++ sources for the runtime to link against.
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -20,7 +22,7 @@ namespace fs = std::filesystem;
 using namespace mgspo;
 
 static void usage() {
-  std::cerr << "usage: mgspo-lift <module.elf> <outdir> [--base 0xADDR] [--per-file N] [--helper <module.prx>]...\n"
+  std::cerr << "usage: mgspo-lift <module.elf> <outdir> [--base 0xADDR] [--per-file N] [--helper <module.prx>]... [--helper-dir <dir>]\n"
                "       mgspo-lift <module.elf> --stats [--base 0xADDR]\n"
                "       mgspo-lift <module.elf> --vfpu\n"
                "       mgspo-lift <module.elf> --disasm <start> <count>\n";
@@ -81,6 +83,24 @@ int main(int argc, char** argv) {
       else if (a == "--per-file" && i + 1 < argc) perFile = std::stoul(argv[++i]);
       else if (a == "--stats") stats = true;
       else if (a == "--helper" && i + 1 < argc) helpers.push_back(argv[++i]);
+      else if (a == "--helper-dir" && i + 1 < argc) {
+        // every plain PRX in the folder; encrypted (~SCE/~PSP) files are skipped
+        std::vector<std::string> found;
+        for (const auto& e : fs::directory_iterator(argv[++i])) {
+          if (!e.is_regular_file()) continue;
+          std::string ext = e.path().extension().string();
+          for (char& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+          if (ext != ".prx" && ext != ".elf") continue;
+          std::vector<uint8_t> head = readFile(e.path().string());
+          if (head.size() < 4 || head[0] != 0x7F || head[1] != 'E' || head[2] != 'L' || head[3] != 'F') {
+            std::printf("skipping %s (not a plain ELF, decrypt it first)\n", e.path().filename().string().c_str());
+            continue;
+          }
+          found.push_back(e.path().string());
+        }
+        std::sort(found.begin(), found.end());
+        helpers.insert(helpers.end(), found.begin(), found.end());
+      }
       else if (a == "--vfpu") vfpuHist = true;
       else if (a == "--disasm" && i + 2 < argc) {
         disasm = true;

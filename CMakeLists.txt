@@ -48,6 +48,7 @@ add_library(mgspo_rt STATIC
   runtime/src/atrac3.cpp
   runtime/src/atrac.cpp
   runtime/src/misc.cpp
+  runtime/src/font.cpp
   runtime/src/modules.cpp
   runtime/src/vfpu.cpp
 )

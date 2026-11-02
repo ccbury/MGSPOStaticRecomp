@@ -198,7 +198,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
   for (uint32_t a = fn.start; a < fn.end; a += 4) {
     Insn i = decode(img.word(a), a);
     if (isRelBranch(i.op) && inFn(i.target)) labels.insert(i.target);
-    if (isRelBranch(i.op) && isLikely(i.op)) labels.insert(a + 8);
+    if (isRelBranch(i.op) && isLikely(i.op) && inFn(a + 8)) labels.insert(a + 8);
     if (img.jumpTargets.count(a) || img.addressTaken.count(a)) labels.insert(a);
     if (i.op == Op::J && inFn(i.target)) labels.insert(i.target);
   }
@@ -277,7 +277,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
           skip.insert(pc + 4);
         } else if (isLikely(i.op)) {
           out += "  if (" + cond + ") { " + delay + " " + tail(i.target) + " }\n";
-          out += "  goto " + label(pc + 8) + ";\n";
+          out += "  " + tail(pc + 8) + "\n";
           skip.insert(pc + 4);
         } else {
           // The delay slot is emitted again below for the not-taken path.

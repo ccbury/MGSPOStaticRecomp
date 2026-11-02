@@ -21,8 +21,10 @@
 
 static void usage(const char* prog) {
   std::fprintf(stderr,
-               "usage: %s <module.elf> [--disc <dir>] [--save <dir>] [--headless] [--trace] [--report <file>]\n"
+               "usage: %s <module.elf> [--disc <dir>] [--save <dir>] [--iso <file>] [--modules <dir>] [--headless] [--trace] [--report <file>]\n"
                "  --disc    directory containing PSP_GAME (extracted disc), served as disc0:/\n"
+               "  --iso     the disc image, for raw sector reads (disc0:/sce_lbn...)\n"
+               "  --modules directory with decrypted helper modules (e.g. libfont.prx) lifted via --helper\n"
                "  --save    directory backing ms0:/ (default: ./savedata)\n"
                "  --headless  no window or audio\n"
                "  --trace   log every import call\n"
@@ -56,6 +58,8 @@ int main(int argc, char** argv) {
     bool more = i + 1 < argc;
     if (a == "--disc" && more) cfg.discRoot = argv[++i];
     else if (a == "--save" && more) cfg.saveRoot = argv[++i];
+    else if (a == "--iso" && more) cfg.discImage = argv[++i];
+    else if (a == "--modules" && more) cfg.moduleDir = argv[++i];
     else if (a == "--report" && more) reportPath = argv[++i];
     else if (a == "--timeout" && more) timeoutSec = std::atoi(argv[++i]);
     else if (a == "--headless") cfg.headless = true;
