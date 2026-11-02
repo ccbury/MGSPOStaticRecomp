@@ -1,0 +1,28 @@
+# build output
+/build/
+/out/
+/cmake-build-*/
+CMakeUserPresets.json
+*.obj
+*.o
+*.exe
+*.pdb
+
+# IDE
+.vs/
+.vscode/
+.idea/
+
+# game data must never be committed
+*.iso
+*.cso
+*.zso
+*.pbp
+*.prx
+*.elf
+EBOOT.BIN
+BOOT.BIN
+PARAM.SFO
+/extracted/
+/assets/
+/work/
