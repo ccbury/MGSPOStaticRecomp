@@ -168,9 +168,7 @@ void h_msgdialog_shutdown(Cpu& c) {
   ret(c, 0);
 }
 
-void h_osk_init(Cpu& c) {
-  uint32_t p = arg(c, 0);
-  dialog_start(g_osk, p);
+void osk_fill(uint32_t p) {
   if (p) {
     sw(p + 0x1C, 0);
     uint32_t data = lw(p + 0x34);
@@ -186,6 +184,12 @@ void h_osk_init(Cpu& c) {
       sw(data + 0x30, 2);  // result: text changed
     }
   }
+}
+
+void h_osk_init(Cpu& c) {
+  uint32_t p = arg(c, 0);
+  dialog_start(g_osk, p);
+  osk_fill(p);
   ret(c, 0);
 }
 
@@ -193,6 +197,7 @@ void h_osk_status(Cpu& c) { ret(c, static_cast<uint32_t>(dialog_status(g_osk)));
 
 void h_osk_update(Cpu& c) {
   dialog_update(g_osk);
+  if (g_osk.state == 3) osk_fill(g_osk.params);
   ret(c, 0);
 }
 
