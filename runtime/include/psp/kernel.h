@@ -1,0 +1,27 @@
+#pragma once
+#include <cstdint>
+#include <string>
+
+#include "cpu.h"
+
+namespace psp {
+
+struct KernelConfig {
+  std::string discRoot;             // directory that contains PSP_GAME (the extracted disc)
+  std::string saveRoot = "savedata";  // backs ms0:/
+  bool headless = false;            // no window, no audio device
+  bool trace = false;               // log every import call
+  uint32_t userMemEnd = 0x0A000000;  // end of the user partition (32 MB model)
+};
+
+// Sets up the kernel state. userHeapStart is the first free guest address after the module image.
+void kernel_init(const KernelConfig& cfg, uint32_t userHeapStart, uint32_t gp);
+
+// Registers every firmware import handler. Call before bind_tables().
+void register_all_hle();
+
+// Runs the module entry on the calling host thread as the PSP "user main" thread and returns once
+// the game exits, every thread has finished, or the program is stuck. Returns a process exit code.
+int kernel_run_main(uint32_t entry, uint32_t argSize = 0, const void* args = nullptr);
+
+}  // namespace psp

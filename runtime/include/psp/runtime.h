@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 
 #include "cpu.h"
 #include "memory.h"
@@ -10,6 +11,24 @@ namespace psp {
 
 // Registers a handler for an imported library function. Must be called before bind_tables().
 void register_hle(const char* module, uint32_t nid, HleFn fn);
+
+// Same, with a function name that shows up in logs and the import report.
+void register_hle(const char* module, uint32_t nid, const char* name, HleFn fn);
+
+// Handler for every import of a library that has no handler of its own.
+void register_hle_fallback(const char* module, HleFn fn);
+
+// Name given at registration time, or nullptr.
+const char* hle_name(const char* module, uint32_t nid);
+
+// Called before every import is dispatched (scheduler hook).
+void set_hle_poll(void (*fn)(Cpu&));
+
+// Log every import call (name, arguments, result) to stderr.
+void set_hle_trace(bool on);
+
+// Writes imports in order of first call: module, nid, name, call count, whether it has a handler.
+void write_import_report(std::FILE* out);
 
 // Hands the generated function and import tables to the runtime and resolves imports.
 void bind_tables(const FuncEntry* funcs, size_t funcCount, const ImportEntry* imports, size_t importCount);

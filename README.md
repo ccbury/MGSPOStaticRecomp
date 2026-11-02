@@ -61,7 +61,23 @@ mgspo-lift <boot.elf> --disasm <addr> <n> disassemble n words from a guest addre
 The module is loaded at a fixed base (`0x08804000`) with its relocations applied, so the output
 uses real guest addresses. Output goes into a directory you pick (`/generated/` is git-ignored);
 to build it into a runnable exe, configure with `-DMGSPO_GENERATED_DIR=<outdir>` and run
-`mgspo-game <boot.elf>`. See [docs/lifter.md](docs/lifter.md) for how it works and what is missing.
+`mgspo-game`. See [docs/lifter.md](docs/lifter.md) for how it works and what is missing.
+
+## mgspo-game
+
+```
+mgspo-game <boot.elf> [--disc <dir>] [--save <dir>] [--headless] [--trace]
+                      [--report <file>] [--timeout <sec>]
+```
+
+`--disc` is the extracted disc (the folder that contains `PSP_GAME`), served to the game as
+`disc0:/` (read only). `--save` is a plain folder backing `ms0:/`. Without `--headless` you get a
+window (2x) with keyboard or XInput controls: arrows = d-pad, Z/X/A/S = cross/circle/square/triangle,
+Q/E = L/R, Enter = start, Right Shift = select, IJKL = analog stick.
+
+Every import the game calls without an implementation is logged once with its module and NID.
+`--report` writes all imports in order of first call with call counts, which is the list to work
+from. Details are in [docs/lifter.md](docs/lifter.md).
 
 ## Layout
 

@@ -31,13 +31,42 @@
   bit field ops, saturating float to int, FPU compares).
 - `psp/runtime.h`: `register_hle(module, nid, fn)` to implement an import, `bind_tables`, and
   `call` for indirect calls. Imports without a handler log once and return 0.
+  `register_hle` takes an optional name that shows up in logs and the import report.
+- `psp/kernel.h`: `kernel_init`, `register_all_hle` and `kernel_run_main` set up the firmware
+  layer and run the module entry.
+
+### Firmware layer
+
+| File | Covers |
+|---|---|
+| `sysmem.cpp` | partitions, memory blocks, heap (`SysMemUserForUser`) |
+| `threadman.cpp` | threads, semaphores, event flags, mutexes, message boxes, fixed/variable pools, callbacks, timers, interrupts |
+| `io.cpp` | `sceIo*`; `disc0:/` maps to the extracted disc (read only), `ms0:/` to the save folder |
+| `display.cpp` | framebuffer, vblank, `sceCtrl` |
+| `ge.cpp` | `sceGe_user`: walks display lists and fires signal/finish callbacks, no rendering |
+| `audio.cpp` | `sceAudio` channels mixed into a FIFO |
+| `misc.cpp` | module manager, loadexec, rtc, utility, umd, power and the rest |
+| `platform_win32.cpp` | window, keyboard/XInput, waveOut. `platform_null.cpp` is used for headless builds |
+
+Guest threads are host threads, but only one runs at a time (a CPU token is handed over at
+blocking calls and when a thread's time slice runs out), so recompiled code needs no locking.
+The game keeps a per-thread table in `$k0`, so every thread gets a zeroed block for it.
+
+### Startup
+
+With the US game the first things called are the SDK version setters, `sceKernelCreateThread`/
+`StartThread` for the real main thread, a few semaphores, the system parameter and rtc calls,
+`sceUmdGetDriveStat` polling, and then `sceKernelLoadModuleByID` for `zlibdec.prx`, `sound2.prx`
+and `kjfs.prx`. Those helper modules are not linked yet, so the load returns a fake id and calls
+into them are logged as unimplemented (first one hit is `kjfs:93E9297F`). Run
+`mgspo-game ... --report imports.txt --timeout 15` to get the list for your own build.
 
 ## Numbers for the US release (ULUS10202 main module)
 
 | | |
 |---|---|
 | Code words | 481,818 |
-| Functions found | 5,297 (4,892 call targets, 37 jump roots, 363 pointer roots) |
+| Functions found | 6,398 |
 | Switch table targets | 984 |
 | VFPU instructions | 27,657 |
 | COP0 / unknown | 0 / 0 |
@@ -50,9 +79,9 @@ result with every import unimplemented gets through the module start stub and re
 ## Not done yet
 
 - VFPU translation. The register file exists in `Cpu` but nothing uses it.
-- Real implementations of the imported libraries (threads, I/O, GE, display, audio, controls).
-- The game's other modules (`kjfs`, `sound2`, `zlibdec` and the per-stage PRXs) are separate
-  binaries and have not been analysed.
+- GE rendering. Lists are accepted and finished, nothing is drawn.
+- Linking the helper modules (`kjfs`, `sound2`, `zlibdec` and the per-stage PRXs); they are
+  separate binaries and have not been analysed. Net libraries return an error.
 - Naming NIDs (output uses `module:NID`).
 - Function boundary detection is heuristic; 142 code words are not covered by any function
   (the gaps between import stubs and the code around them have not been inspected yet).

@@ -33,7 +33,23 @@ target_link_libraries(mgspo-lift PRIVATE mgspo)
 add_library(mgspo_rt STATIC
   runtime/src/memory.cpp
   runtime/src/dispatch.cpp
+  runtime/src/kernel.cpp
+  runtime/src/sysmem.cpp
+  runtime/src/threadman.cpp
+  runtime/src/io.cpp
+  runtime/src/display.cpp
+  runtime/src/ge.cpp
+  runtime/src/audio.cpp
+  runtime/src/misc.cpp
 )
+if(WIN32)
+  target_sources(mgspo_rt PRIVATE runtime/src/platform_win32.cpp)
+  target_link_libraries(mgspo_rt PUBLIC user32 gdi32 winmm)
+else()
+  target_sources(mgspo_rt PRIVATE runtime/src/platform_null.cpp)
+  find_package(Threads REQUIRED)
+  target_link_libraries(mgspo_rt PUBLIC Threads::Threads)
+endif()
 target_include_directories(mgspo_rt PUBLIC runtime/include)
 
 # Set -DMGSPO_GENERATED_DIR=<dir produced by mgspo-lift> to build the recompiled game.
@@ -45,6 +61,7 @@ if(MGSPO_GENERATED_DIR)
   target_link_libraries(mgspo-game PRIVATE mgspo_rt mgspo)
   if(MSVC)
     target_compile_options(mgspo-game PRIVATE /W0 /bigobj)
+    target_link_options(mgspo-game PRIVATE /STACK:16777216)
   endif()
 endif()
 
@@ -58,4 +75,8 @@ if(MGSPO_BUILD_TESTS)
   add_executable(mgspo-lifter-tests tests/test_lifter.cpp)
   target_link_libraries(mgspo-lifter-tests PRIVATE mgspo mgspo_rt)
   add_test(NAME mgspo-lifter-tests COMMAND mgspo-lifter-tests)
+
+  add_executable(mgspo-runtime-tests tests/test_runtime.cpp)
+  target_link_libraries(mgspo-runtime-tests PRIVATE mgspo_rt)
+  add_test(NAME mgspo-runtime-tests COMMAND mgspo-runtime-tests)
 endif()
