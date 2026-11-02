@@ -149,8 +149,6 @@ Next blockers, roughly in order:
 2. **More stages.** Each new stage the game requests that is not lifted shows up as `not lifted`
    with its size; add it with `--stage`. Jump-table style stubs reached by computed jumps can still
    be missing from function discovery.
-3. **Movie audio.** The movie's ATRAC3+ stream is demuxed and paced (`sceMpegGetAtracAu` /
-   `sceMpegAtracDecode` run in step with the video) but there is no ATRAC3+ decoder, so it plays as
-   silence.
+3. **Movie audio.** The movie's ATRAC3+ stream is demuxed, paced and decoded (see audio.md).
 4. **Network imports** (sceNet*, sceHttp) used by stages need stubs that report no connection.
 5. **Audio**: `sceSasCore`/`sceAtrac3plus` coverage.

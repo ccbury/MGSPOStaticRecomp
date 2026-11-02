@@ -52,6 +52,11 @@ add_library(mgspo_rt STATIC
   runtime/src/sas_core.cpp
   runtime/src/sas.cpp
   runtime/src/atrac3.cpp
+  runtime/src/atrac3plus.cpp
+  runtime/src/atrac3p/bitstream.cpp
+  runtime/src/atrac3p/dsp.cpp
+  runtime/src/atrac3p/atrac_common.cpp
+  runtime/src/atrac3p/compat.cpp
   runtime/src/atrac.cpp
   runtime/src/misc.cpp
   runtime/src/mpeg.cpp
@@ -70,6 +75,10 @@ else()
 endif()
 target_include_directories(mgspo_rt PUBLIC runtime/include)
 target_link_libraries(mgspo_rt PUBLIC mgspo)
+
+add_executable(mgspo-at3dec tools/audio/at3dec.cpp)
+target_link_libraries(mgspo-at3dec PRIVATE mgspo_rt)
+target_include_directories(mgspo-at3dec PRIVATE runtime/src)
 
 # Set -DMGSPO_GENERATED_DIR=<dir produced by mgspo-lift> to build the recompiled game.
 set(MGSPO_GENERATED_DIR "" CACHE PATH "Output directory of mgspo-lift")
