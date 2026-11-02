@@ -132,8 +132,8 @@ void present_frame() {
   }
   plat::present(g_bgra.data(), w, h);
   static uint64_t s_numbered = 0;
-  if (!g_dumpPath.empty() && g_vcount % 30 == 0) {
-    write_png(g_dumpPath, g_bgra.data(), w, h);
+  if (!g_dumpPath.empty()) {
+    if (g_vcount % 30 == 0) write_png(g_dumpPath, g_bgra.data(), w, h);
     // a '#' in the path also keeps a numbered copy every 5 seconds of run time
     size_t hash = g_dumpPath.find('#');
     if (hash != std::string::npos && g_vcount / 300 != s_numbered) {

@@ -651,7 +651,7 @@ struct Raster {
 
     if (blendOn) {
       uint32_t bm = r[0xDF];
-      int func = bm & 15, sfac = (bm >> 4) & 15, dfac = (bm >> 8) & 15;
+      int sfac = bm & 15, dfac = (bm >> 4) & 15, func = (bm >> 8) & 7;
       int src[4] = {c[0], c[1], c[2], c[3]};
       int dc[4] = {static_cast<int>(dst & 255), static_cast<int>((dst >> 8) & 255), static_cast<int>((dst >> 16) & 255),
                    static_cast<int>(dst >> 24)};
