@@ -152,3 +152,8 @@ Next blockers, roughly in order:
 3. **Movie audio.** The movie's ATRAC3+ stream is demuxed, paced and decoded (see audio.md).
 4. **Network imports** (sceNet*, sceHttp) used by stages need stubs that report no connection.
 5. **Audio**: `sceSasCore`/`sceAtrac3plus` coverage.
+## Title menu and name entry
+
+- The GE blend register was decoded wrongly (source factor is bits 0-3, destination bits 4-7, function bits 8-10). Fixing it makes the title menu text and background render.
+- Start now reaches the title menu; New Game reaches the name entry prompt.
+- sceUtility msgdialog and OSK have basic HLE, but the OSK result struct layout is not right yet, so the game reports 'entered text is too short' and loops. Next blocker.

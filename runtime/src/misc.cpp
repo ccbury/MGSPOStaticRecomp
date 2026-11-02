@@ -1,5 +1,6 @@
 // Small libraries: loadexec, rtc, utils, power, umd, utility, net stubs.
 #include <chrono>
+#include <cstdio>
 #include <ctime>
 #include <map>
 #include <string>
@@ -115,6 +116,96 @@ void h_sysparam_string(Cpu& c) {
   ret(c, 0);
 }
 
+// ---- sceUtility dialogs ----
+
+// The msgdialog and on-screen keyboard share one lifecycle: initialise, run for a few
+// updates, finish, then shut down. Both resolve immediately with a canned answer.
+struct UtilityDialog {
+  int state = 0;  // 0 none, 1 initialised, 2 running, 3 finished, 4 shut down
+  int updates = 0;
+  uint32_t params = 0;
+};
+
+UtilityDialog g_msgDialog, g_osk;
+
+int dialog_status(UtilityDialog& d) {
+  int s = d.state;
+  if (s == 1) d.state = 2;
+  else if (s == 4) d.state = 0;
+  return s;
+}
+
+void dialog_update(UtilityDialog& d) {
+  if (d.state == 2 && ++d.updates >= 3) d.state = 3;
+}
+
+void dialog_start(UtilityDialog& d, uint32_t params) {
+  d.state = 1;
+  d.updates = 0;
+  d.params = params;
+}
+
+void h_msgdialog_init(Cpu& c) {
+  uint32_t p = arg(c, 0);
+  dialog_start(g_msgDialog, p);
+  // layout: mode +0x34, error +0x38, message[512] +0x3C, options +0x23C, buttonPressed +0x240
+  if (p && lw(p) >= 0x244) {
+    sw(p + 0x1C, 0);   // result: ok
+    sw(p + 0x240, 1);  // button pressed: yes
+  }
+  ret(c, 0);
+}
+
+void h_msgdialog_status(Cpu& c) { ret(c, static_cast<uint32_t>(dialog_status(g_msgDialog))); }
+
+void h_msgdialog_update(Cpu& c) {
+  dialog_update(g_msgDialog);
+  ret(c, 0);
+}
+
+void h_msgdialog_shutdown(Cpu& c) {
+  g_msgDialog.state = 4;
+  ret(c, 0);
+}
+
+void osk_fill(uint32_t p) {
+  if (p) {
+    sw(p + 0x1C, 0);
+    uint32_t data = lw(p + 0x34);
+    if (data) {
+      static const char16_t kName[] = u"SNAKE";
+      uint32_t out = lw(data + 0x2C), limit = lw(data + 0x28);
+      uint32_t n = 0;
+      if (out) {
+        for (; kName[n] && (!limit || n < limit); ++n) sh(out + n * 2, kName[n]);
+        sh(out + n * 2, 0);
+      }
+      sw(data + 0x24, n);
+      sw(data + 0x30, 2);  // result: text changed
+    }
+  }
+}
+
+void h_osk_init(Cpu& c) {
+  uint32_t p = arg(c, 0);
+  dialog_start(g_osk, p);
+  osk_fill(p);
+  ret(c, 0);
+}
+
+void h_osk_status(Cpu& c) { ret(c, static_cast<uint32_t>(dialog_status(g_osk))); }
+
+void h_osk_update(Cpu& c) {
+  dialog_update(g_osk);
+  if (g_osk.state == 3) osk_fill(g_osk.params);
+  ret(c, 0);
+}
+
+void h_osk_shutdown(Cpu& c) {
+  g_osk.state = 4;
+  ret(c, 0);
+}
+
 // ---- sceOpenPSID ----
 
 void h_openpsid(Cpu& c) {
@@ -165,7 +256,14 @@ void register_misc() {
   register_hle("sceUtility", 0xA5DA2406, "sceUtilityGetSystemParamInt", h_sysparam_int);
   register_hle("sceUtility", 0x34B78343, "sceUtilityGetSystemParamString", h_sysparam_string);
   register_hle("sceUtility", 0xC629AF26, "sceUtilityLoadAvModule", h_zero);
-  register_hle("sceUtility", 0x9A1C91D7, "sceUtilityMsgDialogGetStatus", h_zero);
+  register_hle("sceUtility", 0x9A1C91D7, "sceUtilityMsgDialogGetStatus", h_msgdialog_status);
+  register_hle("sceUtility", 0x2AD8E239, "sceUtilityMsgDialogInitStart", h_msgdialog_init);
+  register_hle("sceUtility", 0x95FC253B, "sceUtilityMsgDialogUpdate", h_msgdialog_update);
+  register_hle("sceUtility", 0x67AF3428, "sceUtilityMsgDialogShutdownStart", h_msgdialog_shutdown);
+  register_hle("sceUtility", 0xF6269B82, "sceUtilityOskInitStart", h_osk_init);
+  register_hle("sceUtility", 0xF3F76017, "sceUtilityOskGetStatus", h_osk_status);
+  register_hle("sceUtility", 0x4B85C861, "sceUtilityOskUpdate", h_osk_update);
+  register_hle("sceUtility", 0x3DFAEBA9, "sceUtilityOskShutdownStart", h_osk_shutdown);
 
   register_hle("scePower", 0x04B7766E, "scePowerRegisterCallback", h_zero);
   register_hle("sceImpose", 0x36AA6E91, "sceImposeSetLanguageMode", h_zero);

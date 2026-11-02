@@ -109,11 +109,49 @@ void Demuxer::parse() {
 
 void Demuxer::flush_video() {
   if (haveVideo_ && !curVideo_.data.empty()) {
-    videoBytes_ += curVideo_.data.size();
-    video_.push_back(std::move(curVideo_));
+    split_pictures(curVideo_);
   }
   curVideo_ = Au();
   haveVideo_ = false;
+}
+
+// A PES packet with a timestamp can carry several pictures. Cut it at each new picture (first slice
+// of a frame, plus any parameter sets / AUD / SEI queued in front of it) so the game gets one frame
+// per access unit, with timestamps stepped by one frame.
+void Demuxer::split_pictures(Au& au) {
+  const std::vector<uint8_t>& d = au.data;
+  std::vector<size_t> cuts;
+  size_t prefix = SIZE_MAX;
+  bool haveSlice = false;
+  for (size_t i = 0; i + 4 < d.size(); ++i) {
+    if (d[i] != 0 || d[i + 1] != 0 || d[i + 2] != 1) continue;
+    size_t start = (i > 0 && d[i - 1] == 0) ? i - 1 : i;
+    int type = d[i + 3] & 0x1F;
+    if (type == 1 || type == 5) {
+      bool firstSlice = (d[i + 4] & 0x80) != 0;
+      if (firstSlice) {
+        if (haveSlice) cuts.push_back(prefix != SIZE_MAX ? prefix : start);
+        haveSlice = true;
+      }
+      prefix = SIZE_MAX;
+    } else if (type >= 6 && type <= 9 && haveSlice) {
+      if (prefix == SIZE_MAX) prefix = start;
+    }
+    i += 2;
+  }
+  size_t from = 0;
+  int64_t step = 0;
+  for (size_t k = 0; k <= cuts.size(); ++k) {
+    size_t to = k < cuts.size() ? cuts[k] : d.size();
+    Au part;
+    part.pts = au.pts + step;
+    part.dts = au.dts + step;
+    part.data.assign(d.begin() + from, d.begin() + to);
+    videoBytes_ += part.data.size();
+    video_.push_back(std::move(part));
+    from = to;
+    step += kVideoTimestampStep;
+  }
 }
 
 void Demuxer::on_video(const uint8_t* p, size_t n, bool hasPts, int64_t pts, int64_t dts) {
