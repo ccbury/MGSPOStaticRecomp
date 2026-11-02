@@ -51,6 +51,8 @@ struct Context {
   bool gotPicture = false;
   mpeg::Picture last;
   uint32_t videoAus = 0, audioAus = 0, pictures = 0;
+  int64_t firstPts = -1, lastPts = -1, audioPts = -1;
+  uint64_t startUs = 0;
 };
 
 std::map<uint32_t, Context> g_ctx;
@@ -81,6 +83,19 @@ void sync_ring(Context& x) {
 void put_ts(uint32_t addr, int64_t v) {
   sw(addr, static_cast<uint32_t>(static_cast<uint64_t>(v) >> 32));
   sw(addr + 4, static_cast<uint32_t>(v));
+}
+
+// The game syncs picture timing to the audio it decodes. With no audio device to block on, the
+// decode call itself has to wait until the stream's clock reaches the unit's timestamp.
+void pace(Cpu& c, Context& x, int64_t pts) {
+  if (pts < 0) return;
+  if (x.firstPts < 0 || pts < x.lastPts) {
+    x.firstPts = pts;
+    x.startUs = now_us();
+  }
+  x.lastPts = pts;
+  uint64_t due = x.startUs + static_cast<uint64_t>(pts - x.firstPts) * 1000000ull / 90000ull;
+  if (due > now_us()) sleep_until(c, due, false);
 }
 
 void h_zero(Cpu& c) { ret(c, 0); }
@@ -229,6 +244,8 @@ void h_get_avc_au(Cpu& c) {
   x->video = std::move(au);
   x->haveVideo = true;
   ++x->videoAus;
+  if (std::getenv("MGSPO_MPEG_DEBUG") && x->videoAus % 30 == 0)
+    std::fprintf(stderr, "mpeg video au %u pts=%lld t=%llums\n", x->videoAus, (long long)x->video.pts, (unsigned long long)(now_us() / 1000));
   sync_ring(*x);
   ret(c, 0);
 }
@@ -244,7 +261,10 @@ void h_get_atrac_au(Cpu& c) {
   sw(out + 16, arg(c, 1));
   sw(out + 20, kAtracEsSize);
   put32(arg(c, 3), 0);
+  x->audioPts = au.pts;
   ++x->audioAus;
+  if (std::getenv("MGSPO_MPEG_DEBUG") && x->audioAus % 200 == 0)
+    std::fprintf(stderr, "mpeg audio au %u pts=%lld t=%llums\n", x->audioAus, (long long)au.pts, (unsigned long long)(now_us() / 1000));
   sync_ring(*x);
   ret(c, 0);
 }
@@ -273,7 +293,7 @@ void h_avc_decode(Cpu& c) {
     return ret(c, kInvalidValue);
   }
   x->haveVideo = false;
-  if (!x->decoder) {
+  if (x->audioAus == 0) pace(c, *x, x->video.pts);  if (!x->decoder) {
     x->decoder = mpeg::create_video_decoder(x->width, x->height);
     std::fprintf(stderr, "movie: %dx%d, decoder: %s\n", x->width, x->height, x->decoder->name());
   }
@@ -311,6 +331,8 @@ void h_avc_decode_mode(Cpu& c) {
 
 // There is no ATRAC3+ decoder yet, so movie audio plays back as silence with correct timing.
 void h_atrac_decode(Cpu& c) {
+  Context* x = ctx_of(arg(c, 0));
+  if (x) pace(c, *x, x->audioPts);
   uint32_t buf = arg(c, 2);
   if (buf) std::memset(ptr(buf), 0, kAtracOutSize);
   ret(c, 0);

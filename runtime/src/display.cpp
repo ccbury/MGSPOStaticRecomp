@@ -131,7 +131,18 @@ void present_frame() {
     }
   }
   plat::present(g_bgra.data(), w, h);
-  if (!g_dumpPath.empty() && g_vcount % 30 == 0) write_png(g_dumpPath, g_bgra.data(), w, h);
+  static uint64_t s_numbered = 0;
+  if (!g_dumpPath.empty() && g_vcount % 30 == 0) {
+    write_png(g_dumpPath, g_bgra.data(), w, h);
+    // a '#' in the path also keeps a numbered copy every 5 seconds of run time
+    size_t hash = g_dumpPath.find('#');
+    if (hash != std::string::npos && g_vcount / 300 != s_numbered) {
+      s_numbered = g_vcount / 300;
+      std::string p = g_dumpPath;
+      p.replace(hash, 1, std::to_string(g_vcount / 60));
+      write_png(p, g_bgra.data(), w, h);
+    }
+  }
 }
 
 void wait_vblank(Cpu& c, bool cb) {
@@ -147,6 +158,30 @@ void h_set_mode(Cpu& c) { ret(c, 0); }
 
 void display_set_dump_path(const std::string& p) { g_dumpPath = p; }
 void display_set_auto_buttons(uint32_t mask) { g_autoButtons = mask; }
+
+namespace {
+
+struct PressStep { uint64_t frame; uint32_t mask; };
+std::vector<PressStep> g_pressScript;
+
+}  // namespace
+
+// "sec:mask,sec:mask,..." : each entry holds the buttons for ~half a second starting at that time.
+void display_set_press_script(const std::string& s) {
+  size_t pos = 0;
+  while (pos < s.size()) {
+    size_t end = s.find(',', pos);
+    if (end == std::string::npos) end = s.size();
+    std::string item = s.substr(pos, end - pos);
+    size_t colon = item.find(':');
+    if (colon != std::string::npos) {
+      double sec = std::strtod(item.substr(0, colon).c_str(), nullptr);
+      uint32_t mask = static_cast<uint32_t>(std::strtoul(item.c_str() + colon + 1, nullptr, 0));
+      g_pressScript.push_back({static_cast<uint64_t>(sec * 60.0), mask});
+    }
+    pos = end + 1;
+  }
+}
 
 namespace {
 
@@ -181,6 +216,8 @@ void write_pad(uint32_t buf, uint32_t count, bool negative) {
   plat::Pad p = plat::poll_pad();
   // Scripted input for unattended runs: held for 5 frames out of every 40.
   if (g_autoButtons && (g_vcount % 40) < 5) p.buttons |= g_autoButtons;
+  for (const PressStep& st : g_pressScript)
+    if (g_vcount >= st.frame && g_vcount < st.frame + 30) p.buttons |= st.mask;
   for (uint32_t i = 0; i < std::max<uint32_t>(count, 1); ++i) {
     uint32_t a = buf + i * 16;
     uint32_t buttons = negative ? ~p.buttons : p.buttons;

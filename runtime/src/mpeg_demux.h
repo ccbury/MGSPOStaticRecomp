@@ -50,6 +50,7 @@ class Demuxer {
   void on_video(const uint8_t* p, size_t n, bool hasPts, int64_t pts, int64_t dts);
   void on_audio(const uint8_t* p, size_t n, bool hasPts, int64_t pts);
   void flush_video();
+  void split_pictures(Au& au);
   void extract_audio_frames(bool final);
 
   std::vector<uint8_t> buf_;
