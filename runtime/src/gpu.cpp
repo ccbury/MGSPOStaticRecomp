@@ -288,12 +288,18 @@ void Gpu::execute(uint32_t word, ListContext* l, Host* host, Stop* stop) {
   }
 }
 
+// Addresses without a region byte are VRAM offsets.
+static uint32_t vram_addr(uint32_t a) {
+  uint32_t p = a & 0x3FFFFFFF;
+  return p < kVramSize ? p + kVramBase : a;
+}
+
 void Gpu::load_clut(uint32_t arg) {
   uint32_t addr = (r_[0xB0] & 0xFFFFFF) | ((r_[0xB1] & 0x0F0000) << 8);
   uint32_t bytes = (arg & 0x3F) * 32;
   if (!bytes) return;
   if (bytes > sizeof clut_) bytes = sizeof clut_;
-  std::memcpy(clut_, ptr(addr), bytes);
+  std::memcpy(clut_, ptr(vram_addr(addr)), bytes);
   clutBytes_ = bytes;
   if (stats_) stats_->clutLoads++;
 }
@@ -309,7 +315,7 @@ void Gpu::transfer() {
   for (uint32_t y = 0; y < h; ++y) {
     uint32_t s = src + ((sy + y) * sw + sx) * bpp;
     uint32_t d = dst + ((dy + y) * dw + dx) * bpp;
-    std::memmove(ptr(d), ptr(s), w * bpp);
+    std::memmove(ptr(vram_addr(d)), ptr(vram_addr(s)), w * bpp);
   }
   if (stats_) {
     stats_->transforms++;

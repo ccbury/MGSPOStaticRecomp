@@ -11,6 +11,11 @@ else()
   add_compile_options(-Wall -Wextra)
 endif()
 
+option(MGSPO_WATCH "Compile in guest store watchpoints (--watch)" OFF)
+if(MGSPO_WATCH)
+  add_compile_definitions(MGSPO_WATCH)
+endif()
+
 add_library(mgspo STATIC
   src/iso.cpp
   src/sfo.cpp

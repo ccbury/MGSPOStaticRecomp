@@ -24,8 +24,16 @@ float f24(uint32_t arg) {
 float clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-uint32_t region_end(uint32_t addr) {
+// The GE takes addresses without a region byte as offsets into VRAM (the SDK hands over plain offsets).
+uint32_t gaddr(uint32_t addr) {
   uint32_t p = addr & 0x3FFFFFFF;
+  return p < kVramSize ? p + kVramBase : addr;
+}
+
+uint8_t* gptr(uint32_t addr) { return ptr(gaddr(addr)); }
+
+uint32_t region_end(uint32_t addr) {
+  uint32_t p = gaddr(addr) & 0x3FFFFFFF;
   if (p - kVramBase < kVramSize) return kVramBase + kVramSize;
   if (p - kRamBase < kRamSize) return kRamBase + kRamSize;
   return 0;
@@ -152,7 +160,7 @@ void decode_color(const uint8_t* p, int fmt, float* c) {
 }
 
 void decode_vertex(const VType& t, uint32_t addr, RawVert& out, int morphIndex = 0) {
-  const uint8_t* p = ptr(addr + morphIndex * t.size);
+  const uint8_t* p = gptr(addr + morphIndex * t.size);
   const bool thr = t.through;
   if (t.wgt)
     for (int i = 0; i < t.wcount && i < 8; ++i)
@@ -307,7 +315,7 @@ struct Raster {
     clearZ = r[0xD3] & 0x400;
     fbFmt = r[0xD2] & 3;
     fbBpp = fbFmt == 3 ? 4 : 2;
-    uint32_t fbAddr = (r[0x9C] & 0xFFFFFF) | ((r[0x9D] & 0xFF0000) << 8);
+    uint32_t fbAddr = gaddr((r[0x9C] & 0xFFFFFF) | ((r[0x9D] & 0xFF0000) << 8));
     fbStride = r[0x9D] & 0x7FF;
     sx1 = r[0xD4] & 0x3FF;
     sy1 = (r[0xD4] >> 10) & 0x3FF;
@@ -319,12 +327,12 @@ struct Raster {
     sy2 = std::min(sy2, rows - 1);
     sx2 = std::min<int>(sx2, static_cast<int>(fbStride) - 1);
     if (sy2 < sy1 || sx2 < sx1) return false;
-    fb = ptr(fbAddr);
+    fb = gptr(fbAddr);
 
     ztestOn = r[0x23] & 1;
     zb = nullptr;
     if (ztestOn || (clear && clearZ)) {
-      uint32_t zAddr = (r[0x9E] & 0xFFFFFF) | ((r[0x9F] & 0xFF0000) << 8);
+      uint32_t zAddr = gaddr((r[0x9E] & 0xFFFFFF) | ((r[0x9F] & 0xFF0000) << 8));
       zStride = r[0x9F] & 0x7FF;
       uint32_t zend = region_end(zAddr);
       if (zend && zStride) {
@@ -333,7 +341,7 @@ struct Raster {
         if (zrows > 0) {
           sy2 = std::min(sy2, zrows - 1);
           sx2 = std::min<int>(sx2, static_cast<int>(zStride) - 1);
-          zb = ptr(zAddr);
+          zb = gptr(zAddr);
         }
       }
       if (!zb) ztestOn = false;
@@ -372,7 +380,7 @@ struct Raster {
   }
 
   bool setup_texture() {
-    tAddr = (r[0xA0] & 0xFFFFFF) | ((r[0xA8] & 0x0F0000) << 8);
+    tAddr = gaddr((r[0xA0] & 0xFFFFFF) | ((r[0xA8] & 0x0F0000) << 8));
     tBufW = r[0xA8] & 0x7FF;
     tW = 1 << std::min<uint32_t>(r[0xB8] & 0xF, 10);
     tH = 1 << std::min<uint32_t>((r[0xB8] >> 8) & 0xF, 10);
@@ -414,9 +422,9 @@ struct Raster {
     auto addr = [&](uint32_t bitsPerPx) -> const uint8_t* {
       uint32_t rowBytes = bw * bitsPerPx / 8;
       uint32_t xb = x * bitsPerPx / 8;
-      if (!tSwz) return ptr(tAddr + y * rowBytes + xb);
+      if (!tSwz) return gptr(tAddr + y * rowBytes + xb);
       uint32_t off = (y / 8) * (rowBytes * 8) + (xb / 16) * 128 + (y % 8) * 16 + (xb % 16);
-      return ptr(tAddr + off);
+      return gptr(tAddr + off);
     };
     switch (tFmt) {
       case 0: case 1: case 2: {
@@ -448,7 +456,7 @@ struct Raster {
     }
     // DXT
     const uint32_t blockSize = tFmt == 8 ? 8 : 16;
-    const uint8_t* blk = ptr(tAddr + ((y / 4) * (bw / 4) + (x / 4)) * blockSize);
+    const uint8_t* blk = gptr(tAddr + ((y / 4) * (bw / 4) + (x / 4)) * blockSize);
     int px = x & 3, py = y & 3;
     uint32_t pal[4];
     const uint8_t* cb = tFmt == 8 ? blk : blk + 8;
@@ -1134,7 +1142,7 @@ void fetch(const Gpu& g, const VType& vt, uint32_t vaddr, uint32_t iaddr, uint32
   uint32_t index = i;
   if (vt.idx) {
     uint32_t sz = comp_size(vt.idx);
-    const uint8_t* p = ptr(iaddr + i * sz);
+    const uint8_t* p = gptr(iaddr + i * sz);
     if (sz == 1) index = *p;
     else if (sz == 2) {
       uint16_t v;
