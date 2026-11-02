@@ -24,6 +24,10 @@ const char* hle_name(const char* module, uint32_t nid);
 // Called before every import is dispatched (scheduler hook).
 void set_hle_poll(void (*fn)(Cpu&));
 
+// For imports without a handler: returns the guest address of a matching export in an already loaded
+// module, or 0. The import is then dispatched as a normal call to that address.
+void set_import_linker(uint32_t (*fn)(const char* module, uint32_t nid));
+
 // Log every import call (name, arguments, result) to stderr.
 void set_hle_trace(bool on);
 

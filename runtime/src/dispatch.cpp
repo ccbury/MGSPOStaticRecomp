@@ -29,6 +29,8 @@ std::vector<uint32_t> g_order;  // import indices in order of first call
 size_t g_unresolved = 0;
 void (*g_poll)(Cpu&) = nullptr;
 bool g_trace = false;
+uint32_t (*g_linker)(const char*, uint32_t) = nullptr;
+std::vector<uint8_t> g_linked;  // imports that were forwarded to a loaded module
 
 std::string hex(uint32_t v) {
   char b[16];
@@ -55,6 +57,7 @@ const char* hle_name(const char* module, uint32_t nid) {
 
 void set_hle_poll(void (*fn)(Cpu&)) { g_poll = fn; }
 void set_hle_trace(bool on) { g_trace = on; }
+void set_import_linker(uint32_t (*fn)(const char* module, uint32_t nid)) { g_linker = fn; }
 
 void bind_tables(const FuncEntry* funcs, size_t funcCount, const ImportEntry* imports, size_t importCount) {
   g_funcs = funcs;
@@ -63,6 +66,7 @@ void bind_tables(const FuncEntry* funcs, size_t funcCount, const ImportEntry* im
   g_importCount = importCount;
   g_handlers.assign(importCount, nullptr);
   g_calls.assign(importCount, 0);
+  g_linked.assign(importCount, 0);
   g_order.clear();
   g_unresolved = 0;
   for (size_t i = 0; i < importCount; ++i) {
@@ -92,6 +96,15 @@ void hle(Cpu& c, uint32_t idx) {
     if (g_trace) std::fprintf(stderr, "[hle]   -> %08X\n", c.r[2]);
     return;
   }
+  if (g_linker) {
+    // Imports of another lifted module resolve to its export once that module has been loaded.
+    if (uint32_t target = g_linker(imp.module, imp.nid)) {
+      g_linked[idx] = 1;
+      if (g_trace) std::fprintf(stderr, "[hle]   -> module export at %08X\n", target);
+      call(c, target);
+      return;
+    }
+  }
   ++g_unresolved;
   if (g_calls[idx] == 1) {
     std::fprintf(stderr, "unimplemented import %s:%08X (a0=%X a1=%X a2=%X a3=%X)\n", imp.module, imp.nid, c.r[4],
@@ -106,7 +119,8 @@ void write_import_report(std::FILE* out) {
     const ImportEntry& imp = g_imports[idx];
     const char* n = hle_name(imp.module, imp.nid);
     std::fprintf(out, "%-18s 0x%08X %-34s %8llu  %s\n", imp.module, imp.nid, n ? n : "-",
-                 static_cast<unsigned long long>(g_calls[idx]), g_handlers[idx] ? "implemented" : "UNIMPLEMENTED");
+                 static_cast<unsigned long long>(g_calls[idx]),
+                 g_handlers[idx] ? "implemented" : g_linked[idx] ? "linked" : "UNIMPLEMENTED");
   }
 }
 void call(Cpu& c, uint32_t addr) {

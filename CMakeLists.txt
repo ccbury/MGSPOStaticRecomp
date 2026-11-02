@@ -42,6 +42,7 @@ add_library(mgspo_rt STATIC
   runtime/src/ge.cpp
   runtime/src/audio.cpp
   runtime/src/misc.cpp
+  runtime/src/modules.cpp
   runtime/src/vfpu.cpp
 )
 if(WIN32)
@@ -53,6 +54,7 @@ else()
   target_link_libraries(mgspo_rt PUBLIC Threads::Threads)
 endif()
 target_include_directories(mgspo_rt PUBLIC runtime/include)
+target_link_libraries(mgspo_rt PUBLIC mgspo)
 
 # Set -DMGSPO_GENERATED_DIR=<dir produced by mgspo-lift> to build the recompiled game.
 set(MGSPO_GENERATED_DIR "" CACHE PATH "Output directory of mgspo-lift")

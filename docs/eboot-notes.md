@@ -102,6 +102,11 @@ function names yet; a name table (from public PSP SDK documentation) is the next
 
 ## Open items
 
-- `PSP_GAME/USRDIR/modules/*.prx` and the per-stage `.prx` files need the same analysis.
+- Of the 25 files in `USRDIR/modules`, `zlibdec`, `kjfs` and `sound2` are plain PRX ELFs (module
+  names `ZLIB`, `KCEJ_FS`, `KCEJ_SOUND2`); the other 22 (`libfont`, `libmp3`, `psmf`, `libsha*`,
+  ...) start with `~SCE` and are encrypted, so they need decrypting before they can be lifted.
+  `zlibdec` has 3 exports and no imports, `kjfs` 20 exports and 56 imports, `sound2` 48 exports
+  and 82 imports (sceAudio, sceAtrac3plus, sceSasCore, sceUmdUser, ...). `sound2` has no
+  module_start. The per-stage `.prx` files still need the same analysis.
 - The `_zar` archives and `slot.dat` formats have not been looked at.
 - The `~PSP` header's `bss` field (offset 0x38) reads as a negative number and is not trusted.

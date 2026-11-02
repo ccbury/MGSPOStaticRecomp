@@ -15,6 +15,16 @@ struct CodeRange {
   std::string name;
 };
 
+struct ExportedFunc {
+  std::string lib;  // empty for the module's own table (module_start and friends)
+  uint32_t nid = 0;
+  uint32_t addr = 0;  // absolute guest address
+};
+
+constexpr uint32_t kNidModuleStart = 0xD632ACDB;
+constexpr uint32_t kNidModuleStop = 0xCEE8593C;
+constexpr uint32_t kNidModuleBootstart = 0xD3744BE0;
+
 // A PRX placed at a fixed guest base with its relocations applied, ready to be
 // disassembled or copied into emulated memory.
 struct PrxImage {
@@ -25,6 +35,7 @@ struct PrxImage {
   uint32_t gp = 0;
   std::vector<CodeRange> code;           // executable sections, stub tables excluded
   std::vector<uint32_t> exportedFuncs;   // absolute addresses of exported functions
+  std::vector<ExportedFunc> exports;     // every exported function with its library and NID
   std::set<uint32_t> addressTaken;       // code addresses produced by relocations
   std::set<uint32_t> jumpTargets;        // subset of addressTaken that looks like switch-table entries
   uint32_t unknownRelocs = 0;
