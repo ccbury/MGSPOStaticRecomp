@@ -46,6 +46,8 @@
 | `ge.cpp` | `sceGe_user`: list queue, sync and callbacks (see `docs/ge.md`) |
 | `gpu.cpp`, `gpu_draw.cpp` | GE command interpreter and software rasteriser that draws into emulated VRAM |
 | `audio.cpp` | `sceAudio` channels mixed into a FIFO |
+| `sas.cpp`, `sas_core.cpp` | `sceSasCore` software synth |
+| `atrac.cpp`, `atrac3.cpp` | `sceAtrac3plus` API and the ATRAC3 decoder |
 | `misc.cpp` | module manager, loadexec, rtc, utility, umd, power and the rest |
 | `platform_win32.cpp` | window, keyboard/XInput, waveOut. `platform_null.cpp` is used for headless builds |
 
@@ -80,8 +82,8 @@ unloaded. An import with no HLE handler is resolved through the export table of 
 were not lifted still load with a fake id and a log line.
 
 Current blockers after module loading: `libfont.prx` (and the other `~SCE` encrypted modules) are
-not lifted, `sceSasCore` and `sceAtrac3plus` are unimplemented so the `sound2` audio thread spins
-on its event flag, and `sceUmdActivate` is stubbed.
+not lifted and `sceUmdActivate` is stubbed. `sceSasCore` and `sceAtrac3plus` are implemented
+(see [audio.md](audio.md)).
 
 ## Numbers for the US release (ULUS10202 main module)
 
@@ -135,7 +137,7 @@ Known simplifications:
 - GE rendering is implemented against synthetic lists only (`docs/ge.md`); it has not been checked
   against the real game yet.
 - The per-stage PRXs and encrypted helper modules (`libfont` etc.) are not lifted. Net libraries
-  return an error. `sceSasCore` and `sceAtrac3plus` are not implemented.
+  return an error. ATRAC3+ streams are not decoded (see [audio.md](audio.md)).
 - Naming NIDs (output uses `module:NID`).
 - Function boundary detection is heuristic; 142 code words are not covered by any function
   (the gaps between import stubs and the code around them have not been inspected yet).

@@ -43,6 +43,10 @@ add_library(mgspo_rt STATIC
   runtime/src/gpu.cpp
   runtime/src/gpu_draw.cpp
   runtime/src/audio.cpp
+  runtime/src/sas_core.cpp
+  runtime/src/sas.cpp
+  runtime/src/atrac3.cpp
+  runtime/src/atrac.cpp
   runtime/src/misc.cpp
   runtime/src/modules.cpp
   runtime/src/vfpu.cpp
@@ -93,4 +97,9 @@ if(MGSPO_BUILD_TESTS)
   target_link_libraries(mgspo-ge-tests PRIVATE mgspo_rt)
   target_include_directories(mgspo-ge-tests PRIVATE runtime/src)
   add_test(NAME mgspo-ge-tests COMMAND mgspo-ge-tests)
+
+  add_executable(mgspo-audio-tests tests/test_audio.cpp)
+  target_link_libraries(mgspo-audio-tests PRIVATE mgspo_rt)
+  target_include_directories(mgspo-audio-tests PRIVATE runtime/src)
+  add_test(NAME mgspo-audio-tests COMMAND mgspo-audio-tests)
 endif()

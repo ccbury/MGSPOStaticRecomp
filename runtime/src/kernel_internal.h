@@ -147,6 +147,10 @@ void register_ge();
 void ge_init();
 void register_audio();
 void audio_init();
+void register_sas();
+void sas_init();
+void register_atrac();
+void atrac_init();
 void register_misc();
 
 }  // namespace k
