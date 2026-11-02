@@ -227,7 +227,7 @@ void savedata_run(uint32_t p) {
   std::string game = cstr(p + 0x3C, 13);
   std::string name = cstr(p + 0x4C, 20);
   uint32_t list = lw(p + 0x60);
-  if ((name.empty() || name[0] == '<') && list) name = cstr(lw(list), 20);
+  if ((name.empty() || name[0] == '<') && list) name = cstr(list, 20);
   std::string file = cstr(p + 0x64, 13);
   uint32_t buf = lw(p + 0x74), bufSize = lw(p + 0x78), dataSize = lw(p + 0x7C);
   namespace fs = std::filesystem;

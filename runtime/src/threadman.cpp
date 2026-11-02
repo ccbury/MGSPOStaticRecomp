@@ -63,6 +63,7 @@ struct Thread {
   bool intrOff = false;
   bool deleteOnExit = false;
   bool isMain = false;
+  bool pendingRelease = false;
   std::shared_ptr<Run> run;
   std::list<Thread*> endWaiters;
 };
@@ -817,6 +818,12 @@ void h_release_wait(Cpu& c) {
   Thread* t = find(g_threads, arg(c, 0));
   if (!t) return ret(c, E_UNKNOWN_UID);
   if (t->state != TState::Waiting) return ret(c, E_ERROR);
+  if (t->waitType == WT_Delay) {
+    // a delaying thread would be parked on its next semaphore wait on hardware; cancel that one instead
+    t->pendingRelease = true;
+    ret(c, 0);
+    return;
+  }
   release_wait(t, E_WAIT_CANCEL);
   ret(c, 0);
   preempt_check();
@@ -889,6 +896,10 @@ void sema_wait(Cpu& c, bool cb) {
   }
   if (ta && lw(ta) == 0) return ret(c, E_WAIT_TIMEOUT);
   Thread* t = g_cur;
+  if (t->pendingRelease) {
+    t->pendingRelease = false;
+    return ret(c, E_WAIT_CANCEL);
+  }
   t->need = static_cast<uint32_t>(n);
   enqueue_waiter(s->waiters, t, (s->attr & 0x100) != 0);
   setup_wait(t, WT_Sema, s->uid, ta, ta != 0, E_WAIT_TIMEOUT);
@@ -1426,6 +1437,15 @@ void register_threadman() {
 }
 
 }  // namespace k
+
+void kernel_dump_threads(FILE* f) {
+  using namespace k;
+  static const char* kStates[] = {"running", "ready", "waiting", "dormant"};
+  std::unique_lock<std::mutex> lk(g_m, std::try_to_lock);
+  for (auto& [id, t] : g_threads)
+    std::fprintf(f, "thread %05X %-16s %-8s wait=%d id=%X prio=%u entry=%08X\n", id, t->name.c_str(),
+                 kStates[static_cast<int>(t->state)], t->waitType, t->waitId, t->prio, t->entry);
+}
 
 int kernel_run_main(uint32_t entry, uint32_t argSize, const void* args) {
   using namespace k;
