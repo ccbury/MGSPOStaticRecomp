@@ -58,9 +58,30 @@ The game keeps a per-thread table in `$k0`, so every thread gets a zeroed block 
 With the US game the first things called are the SDK version setters, `sceKernelCreateThread`/
 `StartThread` for the real main thread, a few semaphores, the system parameter and rtc calls,
 `sceUmdGetDriveStat` polling, and then `sceKernelLoadModuleByID` for `zlibdec.prx`, `sound2.prx`
-and `kjfs.prx`. Those helper modules are not linked yet, so the load returns a fake id and calls
-into them are logged as unimplemented (first one hit is `kjfs:93E9297F`). Run
-`mgspo-game ... --report imports.txt --timeout 15` to get the list for your own build.
+and `kjfs.prx`. Run `mgspo-game ... --report imports.txt --timeout 15` to get the list of
+unimplemented imports for your own build.
+
+### Helper modules
+
+`zlibdec`, `kjfs` and `sound2` are plain (unencrypted, uncompressed) PRX files, so they go through
+the same lifter as the main module. Pass each one with `--helper`:
+
+    mgspo-lift main.BIN gen/ --helper zlibdec.prx --helper kjfs.prx --helper sound2.prx
+
+Lifted code uses absolute addresses, so every helper gets a fixed base placed after the main image
+(page aligned, with a gap). Import indices are numbered across all modules, and `tables.cpp` gets a
+`kModules` table with each module's file name, base, size, start/stop and export list.
+
+At run time `sceKernelLoadModule`/`LoadModuleByID` match the file name against that table, read the
+PRX from the disc folder, apply its relocations at the fixed base and copy it into guest memory.
+`StartModule`/`StopModule` call the module's start/stop entry, and `UnloadModule` just marks it
+unloaded. An import with no HLE handler is resolved through the export table of a loaded module
+(that is how `kjfs` reaches `zlibdec` and the main module reaches `kjfs`/`sound2`). Modules that
+were not lifted still load with a fake id and a log line.
+
+Current blockers after module loading: `libfont.prx` (and the other `~SCE` encrypted modules) are
+not lifted, `sceSasCore` and `sceAtrac3plus` are unimplemented so the `sound2` audio thread spins
+on its event flag, and `sceUmdActivate` is stubbed.
 
 ## Numbers for the US release (ULUS10202 main module)
 
@@ -113,8 +134,8 @@ Known simplifications:
 
 - GE rendering is implemented against synthetic lists only (`docs/ge.md`); it has not been checked
   against the real game yet.
-- Linking the helper modules (`kjfs`, `sound2`, `zlibdec` and the per-stage PRXs); they are
-  separate binaries and have not been analysed. Net libraries return an error.
+- The per-stage PRXs and encrypted helper modules (`libfont` etc.) are not lifted. Net libraries
+  return an error. `sceSasCore` and `sceAtrac3plus` are not implemented.
 - Naming NIDs (output uses `module:NID`).
 - Function boundary detection is heuristic; 142 code words are not covered by any function
   (the gaps between import stubs and the code around them have not been inspected yet).

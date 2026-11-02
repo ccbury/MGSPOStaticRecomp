@@ -1,6 +1,7 @@
 // Tests for the decoder, function discovery, emitter output and runtime helpers.
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 
 #include <psp/runtime.h>
@@ -168,9 +169,53 @@ static void testDispatch() {
   CHECK(threw);
 }
 
+// Two modules emitted together: import indices stay unique and the module table lists both exports.
+static void testMultiModule() {
+  PrxImage a = makeImage();
+  PrxImage b = makeImage();
+  b.base = 0x08900000;
+  b.entry = b.base;
+  b.code[0] = {b.base, b.base + 0x28, ".text"};
+  a.info.module.name = "main";
+  b.info.module.name = "helper";
+  a.exports.push_back({"", kNidModuleStart, a.base});
+  b.exports.push_back({"lib", 0x11223344, b.base + 0x20});
+  b.exportedFuncs.push_back(b.base + 0x20);
+  b.info.imports.push_back({"other", 0, 0, 0, {{0xAABBCCDD, 0x30}}});
+
+  Program pa = discover(a);
+  Program pb = discover(b, 5);
+  CHECK(pb.imports.size() == 1 && pb.imports[0].index == 5);
+  CHECK(pb.stubIndex.count(b.base + 0x30) == 1);
+
+  std::string dir = "mgspo_multi_test";
+  EmitOptions opts;
+  opts.outDir = dir;
+  EmitResult r = emitAll({{&pa, "main", ""}, {&pb, "helper", "helper.prx"}}, opts);
+  CHECK(r.functions == 4);
+
+  auto slurp = [&](const char* f) {
+    std::FILE* fp = std::fopen((dir + "/" + f).c_str(), "rb");
+    std::string s;
+    if (!fp) return s;
+    char buf[4096];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, fp)) > 0) s.append(buf, n);
+    std::fclose(fp);
+    return s;
+  };
+  std::string t = slurp("tables.cpp");
+  CHECK(t.find("{\"lib\", 0x11223344u, 0x08900020u}") != std::string::npos);
+  CHECK(t.find("\"helper.prx\", 0x08900000u") != std::string::npos);
+  CHECK(t.find("0x08900030u, \"other\", 0xAABBCCDDu") != std::string::npos);
+  CHECK(slurp("tables.h").find("kModuleCount") != std::string::npos);
+  std::filesystem::remove_all(dir);
+}
+
 int main() {
   testDecode();
   testDiscovery();
+  testMultiModule();
   testEmit();
   testOps();
   testMemory();

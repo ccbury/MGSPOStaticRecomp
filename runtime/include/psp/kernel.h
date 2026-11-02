@@ -3,6 +3,7 @@
 #include <string>
 
 #include "cpu.h"
+#include "module.h"
 
 namespace psp {
 
@@ -16,6 +17,10 @@ struct KernelConfig {
 
 // Sets up the kernel state. userHeapStart is the first free guest address after the module image.
 void kernel_init(const KernelConfig& cfg, uint32_t userHeapStart, uint32_t gp);
+
+// Tells the module manager which modules were lifted. The first entry is the main module (already
+// resident); the others are mapped from the disc when the game loads them. Call after kernel_init().
+void kernel_bind_modules(const ModuleDesc* mods, size_t count);
 
 // Registers every firmware import handler. Call before bind_tables().
 void register_all_hle();

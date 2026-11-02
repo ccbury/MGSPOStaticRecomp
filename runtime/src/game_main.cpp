@@ -2,6 +2,7 @@
 // user extracted from their own disc, then runs the generated entry function on the
 // emulated kernel.
 #include <chrono>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -88,8 +89,12 @@ int main(int argc, char** argv) {
     psp::ge_set_debug(geOpt);
     psp::mem_write(img.base, img.mem.data(), img.mem.size());
     uint32_t heap = (img.base + static_cast<uint32_t>(img.mem.size()) + 0xFFF) & ~0xFFFu;
+    // helper modules are mapped at fixed addresses behind the main image, keep the heap clear of them
+    for (size_t i = 0; i < kModuleCount; ++i)
+      heap = std::max(heap, (kModules[i].base + kModules[i].size + 0xFFF) & ~0xFFFu);
 
     psp::kernel_init(cfg, heap, kModuleGp + kModuleBase);
+    psp::kernel_bind_modules(kModules, kModuleCount);
     psp::register_all_hle();
     psp::bind_tables(kFuncs, kFuncCount, kImports, kImportCount);
     code = psp::kernel_run_main(kModuleEntry);

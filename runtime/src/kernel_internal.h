@@ -2,8 +2,10 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <psp/kernel.h>
+#include <psp/module.h>
 #include <psp/runtime.h>
 
 namespace psp {
@@ -124,11 +126,14 @@ void preempt_check();
 
 // ---- modules ----
 void register_modulemgr();
+void modules_init(const ModuleDesc* mods, size_t count);
 
 // ---- io ----
 void io_init();
 void register_io();
 std::string io_path_of_fd(int fd);
+// Reads a whole file through the guest path mapping (disc0:/, ms0:/).
+bool io_read_file(const std::string& vpath, std::vector<uint8_t>& out);
 
 // ---- display / ctrl / ge / audio ----
 void display_init();

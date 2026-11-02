@@ -55,6 +55,8 @@ void kernel_init(const KernelConfig& cfg, uint32_t userHeapStart, uint32_t gp) {
   set_hle_trace(cfg.trace);
 }
 
+void kernel_bind_modules(const ModuleDesc* mods, size_t count) { k::modules_init(mods, count); }
+
 void register_all_hle() {
   k::register_sysmem();
   k::register_threadman();

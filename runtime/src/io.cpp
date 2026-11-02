@@ -439,6 +439,21 @@ std::string io_path_of_fd(int fd) {
   return it == g_files.end() ? std::string() : it->second.vpath;
 }
 
+bool io_read_file(const std::string& vpath, std::vector<uint8_t>& out) {
+  fs::path p;
+  bool w = false;
+  if (!resolve(vpath, p, w)) return false;
+  FILE* f = std::fopen(p.string().c_str(), "rb");
+  if (!f) return false;
+  std::fseek(f, 0, SEEK_END);
+  long n = std::ftell(f);
+  std::fseek(f, 0, SEEK_SET);
+  out.resize(n > 0 ? static_cast<size_t>(n) : 0);
+  bool ok = out.empty() || std::fread(out.data(), 1, out.size(), f) == out.size();
+  std::fclose(f);
+  return ok;
+}
+
 void register_io() {
   const char* m = "IoFileMgrForUser";
   register_hle(m, 0x109F50BC, "sceIoOpen", h_open);

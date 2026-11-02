@@ -1,4 +1,4 @@
-// Small libraries: module manager, loadexec, rtc, utils, power, umd, utility, net stubs.
+// Small libraries: loadexec, rtc, utils, power, umd, utility, net stubs.
 #include <chrono>
 #include <ctime>
 #include <map>
@@ -11,51 +11,7 @@ namespace k {
 
 namespace {
 
-constexpr int32_t kMainModuleId = 0x2000;
-
-struct Module {
-  std::string path;
-  bool started = false;
-};
-std::map<int32_t, Module> g_modules;
-
 void h_zero(Cpu& c) { ret(c, 0); }
-
-// ---- ModuleMgrForUser ----
-// The helper PRXs (kjfs, sound2, ...) are not linked in yet; loading one hands back a module id and
-// remembers the path so it shows up in the log.
-
-void h_load_module_by_id(Cpu& c) {
-  std::string path = io_path_of_fd(static_cast<int>(arg(c, 0)));
-  if (path.empty()) return ret(c, E_IO_BADF);
-  int32_t id = alloc_uid();
-  g_modules[id] = {path, false};
-  std::fprintf(stderr, "[module] load %s -> %X (not linked, helper modules are not supported yet)\n", path.c_str(),
-               id);
-  ret(c, static_cast<uint32_t>(id));
-}
-
-void h_start_module(Cpu& c) {
-  auto it = g_modules.find(static_cast<int32_t>(arg(c, 0)));
-  if (it == g_modules.end()) return ret(c, E_UNKNOWN_UID);
-  it->second.started = true;
-  put32(arg(c, 3), 0);
-  ret(c, arg(c, 0));
-}
-
-void h_stop_module(Cpu& c) {
-  put32(arg(c, 3), 0);
-  ret(c, 0);
-}
-
-void h_unload_module(Cpu& c) {
-  g_modules.erase(static_cast<int32_t>(arg(c, 0)));
-  ret(c, 0);
-}
-
-void h_get_module_id(Cpu& c) { ret(c, kMainModuleId); }
-
-void h_stop_unload_self(Cpu&) { throw std::runtime_error("module called sceKernelStopUnloadSelfModule"); }
 
 // ---- LoadExecForUser ----
 
@@ -176,22 +132,11 @@ void h_net_unavailable(Cpu& c) { ret(c, E_NET_UNAVAILABLE); }
 
 }  // namespace
 
-void register_modulemgr() {
-  const char* m = "ModuleMgrForUser";
-  register_hle(m, 0xB7F46618, "sceKernelLoadModuleByID", h_load_module_by_id);
-  register_hle(m, 0x50F0C1EC, "sceKernelStartModule", h_start_module);
-  register_hle(m, 0xD1FF982A, "sceKernelStopModule", h_stop_module);
-  register_hle(m, 0x2E0911AA, "sceKernelUnloadModule", h_unload_module);
-  register_hle(m, 0xF0A26395, "sceKernelGetModuleId", h_get_module_id);
-  register_hle(m, 0xD8B73127, "sceKernelGetModuleIdByAddress", h_get_module_id);
-  register_hle(m, 0x8F2DF740, "sceKernelStopUnloadSelfModuleWithStatus", h_stop_unload_self);
-
+void register_misc() {
   const char* le = "LoadExecForUser";
   register_hle(le, 0x05572A5F, "sceKernelExitGame", h_exit_game);
   register_hle(le, 0x4AC57943, "sceKernelRegisterExitCallback", h_register_exit_callback);
-}
 
-void register_misc() {
   const char* rtc = "sceRtc";
   register_hle(rtc, 0x011F03C1, "sceRtcGetTickResolution", h_rtc_resolution);
   register_hle(rtc, 0x3F7AD767, "sceRtcGetCurrentTick", h_rtc_current_tick);
@@ -215,6 +160,7 @@ void register_misc() {
 
   register_hle("sceUmdUser", 0x6B4A146C, "sceUmdGetDriveStat", h_umd_drive_stat);
   register_hle("sceUmdUser", 0x4A9E5E29, "sceUmdWaitDriveStatCB", h_zero);
+  register_hle("sceUmdUser", 0xC6183D47, "sceUmdActivate", h_zero);
 
   register_hle("sceUtility", 0xA5DA2406, "sceUtilityGetSystemParamInt", h_sysparam_int);
   register_hle("sceUtility", 0x34B78343, "sceUtilityGetSystemParamString", h_sysparam_string);
