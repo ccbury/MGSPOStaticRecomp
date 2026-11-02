@@ -165,7 +165,7 @@ void ov_unmap(uint32_t base, uint32_t size) {
 }
 
 void ov_missing(Cpu&, uint32_t addr) {
-  throw std::runtime_error("call to " + hex(addr) + " in an overlay that is not loaded or not lifted");
+  guest_fault("call to " + hex(addr) + " in an overlay that is not loaded or not lifted");
 }
 
 void call(Cpu& c, uint32_t addr) {
@@ -187,15 +187,15 @@ void call(Cpu& c, uint32_t addr) {
       return;
     }
   }
-  throw std::runtime_error("call to unrecompiled address " + hex(addr) + " (ra " + hex(c.r[31]) + ")");
+  guest_fault("call to unrecompiled address " + hex(addr) + " (ra " + hex(c.r[31]) + ")");
 }
 
 void unimpl(Cpu&, uint32_t addr, uint32_t raw) {
-  throw std::runtime_error("unimplemented instruction " + hex(raw) + " at " + hex(addr));
+  guest_fault("unimplemented instruction " + hex(raw) + " at " + hex(addr));
 }
 
-void syscall_insn(Cpu&, uint32_t code) { throw std::runtime_error("raw syscall instruction " + hex(code)); }
-void break_insn(Cpu&, uint32_t code) { throw std::runtime_error("break instruction " + hex(code)); }
+void syscall_insn(Cpu&, uint32_t code) { guest_fault("raw syscall instruction " + hex(code)); }
+void break_insn(Cpu&, uint32_t code) { guest_fault("break instruction " + hex(code)); }
 
 size_t unresolved_calls() { return g_unresolved; }
 

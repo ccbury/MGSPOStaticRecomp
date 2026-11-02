@@ -15,6 +15,18 @@ struct Cpu {
   uint32_t fcr31 = 0;
   float v[128] = {};
   uint32_t vctrl[16] = {0xE4, 0xE4, 0, 0, 0, 0, 0, 0x7772CEAB, 1, 2, 4, 8, 0, 0, 0, 0};
+  uint32_t calls[32] = {};
+  uint32_t depth = 0;
+};
+
+// Shadow call stack, one per Cpu: every lifted function records its entry address here so a guest
+// fault can report where it happened. Only the last kCallRing entries are kept.
+constexpr uint32_t kCallRing = 32;
+
+struct Frame {
+  Cpu& c;
+  Frame(Cpu& cpu, uint32_t addr) : c(cpu) { c.calls[c.depth++ % kCallRing] = addr; }
+  ~Frame() { --c.depth; }
 };
 
 using HleFn = void (*)(Cpu&);

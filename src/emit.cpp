@@ -214,8 +214,9 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
   std::string out;
   std::set<uint32_t> skip, terminal;
   out += "void " + (overlay ? std::string(kOverlayNameToken) : funcName(fn.start)) + "(psp::Cpu& c) {\n";
+    out += "  psp::Frame fr_(c, " + hex32(fn.start) + ");\n";
 
-  auto delayOf = [&](uint32_t pc) {
+    auto delayOf = [&](uint32_t pc) {
     Insn d = decode(img.word(pc + 4), pc + 4);
     if (hasDelaySlot(d.op)) return unimplStmt(cx, d);
     return simple(cx, d);

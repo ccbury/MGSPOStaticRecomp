@@ -1,6 +1,8 @@
 // sceDisplay and sceCtrl. Vblank is derived from the kernel clock at 59.94 Hz.
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "kernel_internal.h"
@@ -24,11 +26,73 @@ uint64_t g_vcount = 0;
 uint64_t g_nextVblank = 0;
 uint64_t g_lastPresented = UINT64_MAX;
 std::vector<uint32_t> g_bgra;
+std::string g_dumpPath;
+uint32_t g_autoButtons = 0;
+
+uint32_t crc32_update(uint32_t crc, const uint8_t* p, size_t n) {
+  for (size_t i = 0; i < n; ++i) {
+    crc ^= p[i];
+    for (int k = 0; k < 8; ++k) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1)));
+  }
+  return crc;
+}
+
+void png_chunk(std::vector<uint8_t>& out, const char* type, const std::vector<uint8_t>& data) {
+  auto be32 = [&](std::vector<uint8_t>& v, uint32_t x) {
+    for (int s = 24; s >= 0; s -= 8) v.push_back(static_cast<uint8_t>(x >> s));
+  };
+  be32(out, static_cast<uint32_t>(data.size()));
+  std::vector<uint8_t> body(type, type + 4);
+  body.insert(body.end(), data.begin(), data.end());
+  out.insert(out.end(), body.begin(), body.end());
+  be32(out, ~crc32_update(0xFFFFFFFFu, body.data(), body.size()));
+}
+
+// Uncompressed (stored) PNG so no zlib dependency is needed.
+void write_png(const std::string& path, const uint32_t* argb, int w, int h) {
+  std::vector<uint8_t> raw;
+  for (int y = 0; y < h; ++y) {
+    raw.push_back(0);
+    for (int x = 0; x < w; ++x) {
+      uint32_t p = argb[y * w + x];
+      raw.push_back(static_cast<uint8_t>(p >> 16));
+      raw.push_back(static_cast<uint8_t>(p >> 8));
+      raw.push_back(static_cast<uint8_t>(p));
+    }
+  }
+  std::vector<uint8_t> z = {0x78, 0x01};
+  for (size_t pos = 0; pos < raw.size();) {
+    size_t n = std::min<size_t>(65535, raw.size() - pos);
+    bool last = pos + n == raw.size();
+    z.push_back(last ? 1 : 0);
+    z.push_back(n & 0xFF); z.push_back(n >> 8);
+    z.push_back(~n & 0xFF); z.push_back((~n >> 8) & 0xFF);
+    z.insert(z.end(), raw.begin() + pos, raw.begin() + pos + n);
+    pos += n;
+  }
+  uint32_t a = 1, b = 0;
+  for (uint8_t v : raw) { a = (a + v) % 65521; b = (b + a) % 65521; }
+  uint32_t ad = (b << 16) | a;
+  for (int s = 24; s >= 0; s -= 8) z.push_back(static_cast<uint8_t>(ad >> s));
+  std::vector<uint8_t> out = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+  std::vector<uint8_t> ihdr;
+  for (uint32_t v : {static_cast<uint32_t>(w), static_cast<uint32_t>(h)})
+    for (int s = 24; s >= 0; s -= 8) ihdr.push_back(static_cast<uint8_t>(v >> s));
+  ihdr.insert(ihdr.end(), {8, 2, 0, 0, 0});
+  png_chunk(out, "IHDR", ihdr);
+  png_chunk(out, "IDAT", z);
+  png_chunk(out, "IEND", {});
+  if (FILE* f = std::fopen(path.c_str(), "wb")) {
+    std::fwrite(out.data(), 1, out.size(), f);
+    std::fclose(f);
+  }
+}
 
 void present_frame() {
   if (g_lastPresented == g_vcount) return;
   g_lastPresented = g_vcount;
   if (!g_fb.addr || g_fb.stride < 480) return;
+  if ((g_fb.addr & 0x0F000000) == 0 && g_fb.addr < kVramSize) g_fb.addr += kVramBase;
   const int w = 480, h = 272;
   uint32_t bpp = g_fb.format == 3 ? 4 : 2;
   uint32_t last = g_fb.addr + (g_fb.stride * (h - 1) + w) * bpp - 1;
@@ -67,6 +131,7 @@ void present_frame() {
     }
   }
   plat::present(g_bgra.data(), w, h);
+  if (!g_dumpPath.empty() && g_vcount % 30 == 0) write_png(g_dumpPath, g_bgra.data(), w, h);
 }
 
 void wait_vblank(Cpu& c, bool cb) {
@@ -77,6 +142,13 @@ void wait_vblank(Cpu& c, bool cb) {
 }
 
 void h_set_mode(Cpu& c) { ret(c, 0); }
+
+}  // namespace
+
+void display_set_dump_path(const std::string& p) { g_dumpPath = p; }
+void display_set_auto_buttons(uint32_t mask) { g_autoButtons = mask; }
+
+namespace {
 
 void h_set_framebuf(Cpu& c) {
   g_fb.addr = arg(c, 0);
@@ -107,6 +179,8 @@ CtrlState g_ctrl;
 
 void write_pad(uint32_t buf, uint32_t count, bool negative) {
   plat::Pad p = plat::poll_pad();
+  // Scripted input for unattended runs: held for 5 frames out of every 40.
+  if (g_autoButtons && (g_vcount % 40) < 5) p.buttons |= g_autoButtons;
   for (uint32_t i = 0; i < std::max<uint32_t>(count, 1); ++i) {
     uint32_t a = buf + i * 16;
     uint32_t buttons = negative ? ~p.buttons : p.buttons;

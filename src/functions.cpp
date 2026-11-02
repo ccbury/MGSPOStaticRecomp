@@ -144,6 +144,10 @@ Program discover(const PrxImage& img, uint32_t importBase) {
       ++st.pointerRoots;
     }
   }
+  // Splitting at switch cases can leave earlier branches pointing into another function, so both
+  // passes below run until neither adds a root.
+  for (bool again = true; again;) {
+  again = false;
   // A branch that lands in a different function right after a return is really a tail jump to a
   // function that nothing else points at.
   // Adding a root can split a function that other branches stay inside of, so repeat until stable.
@@ -158,6 +162,7 @@ Program discover(const PrxImage& img, uint32_t importBase) {
     roots.insert(t);
     ++st.jumpRoots;
     changed = true;
+    again = true;
   }
   }
   // A switch case can only be reached from inside the function that holds the dispatching jr. When
@@ -178,9 +183,12 @@ Program discover(const PrxImage& img, uint32_t importBase) {
         roots.insert(t);
         ++st.jumpRoots;
         changed = true;
+        again = true;
       }
     }
-  }  st.roots = static_cast<uint32_t>(roots.size());
+  }
+  }
+  st.roots = static_cast<uint32_t>(roots.size());
 
   // Boundaries that terminate a function even when they are not roots.
   std::set<uint32_t> stops(roots);

@@ -91,6 +91,25 @@ void h_volatile_lock(Cpu& c) {
 // ---- sceUmdUser ----
 
 void h_umd_drive_stat(Cpu& c) { ret(c, 0x32); }  // present, initialised, ready
+void h_mpeg_query_mem(Cpu& c) { ret(c, 0x10000); }
+void h_mpeg_rb_mem(Cpu& c) { ret(c, arg(c, 0) * 2104); }
+void h_mpeg_stream(Cpu& c) { ret(c, 1); }
+void h_mpeg_atrac_size(Cpu& c) {
+  put32(arg(c, 1), 0x2000);
+  put32(arg(c, 2), 0x2000);
+  ret(c, 0);
+}
+void h_mpeg_stream_offset(Cpu& c) {
+  put32(arg(c, 2), 0);
+  ret(c, 0);
+}
+// No video is ever produced, so streams report that they have run dry.
+void h_mpeg_no_data(Cpu& c) { ret(c, 0x80618001); }
+// sceMpegCreate(mpeg*, data, size, ringbuffer, ...): the handle is the work area itself.
+void h_mpeg_create(Cpu& c) {
+  put32(arg(c, 0), arg(c, 1));
+  ret(c, 0);
+}
 
 // ---- sceUtility ----
 
@@ -165,7 +184,30 @@ void register_misc() {
   register_hle("sceUtility", 0xA5DA2406, "sceUtilityGetSystemParamInt", h_sysparam_int);
   register_hle("sceUtility", 0x34B78343, "sceUtilityGetSystemParamString", h_sysparam_string);
   register_hle("sceUtility", 0xC629AF26, "sceUtilityLoadAvModule", h_zero);
-    register_hle("sceUtility", 0x9A1C91D7, "sceUtility_9A1C91D7", h_zero);
+  register_hle("sceUtility", 0x9A1C91D7, "sceUtilityMsgDialogGetStatus", h_zero);
+
+  // The intro movies are not decoded yet; these only let the game set up and tear down its player.
+  register_hle("sceMpeg", 0x682A619B, "sceMpegInit", h_zero);
+  register_hle("sceMpeg", 0x874624D6, "sceMpegFinish", h_zero);
+  register_hle("sceMpeg", 0xC132E22F, "sceMpegQueryMemSize", h_mpeg_query_mem);
+  register_hle("sceMpeg", 0xD7A29F46, "sceMpegRingbufferQueryMemSize", h_mpeg_rb_mem);
+  register_hle("sceMpeg", 0x37295ED8, "sceMpegRingbufferConstruct", h_zero);
+  register_hle("sceMpeg", 0x13407F13, "sceMpegRingbufferDestruct", h_zero);
+  register_hle("sceMpeg", 0xD8C5F121, "sceMpegCreate", h_mpeg_create);
+  register_hle("sceMpeg", 0x167AFD9E, "sceMpegInitAu", h_zero);
+  register_hle("sceMpeg", 0xF8DCB679, "sceMpegQueryAtracEsSize", h_mpeg_atrac_size);
+  register_hle("sceMpeg", 0xCEB870B1, "sceMpegFreeAvcEsBuf", h_zero);
+  register_hle("sceMpeg", 0x21FF80E4, "sceMpegQueryStreamOffset", h_mpeg_stream_offset);
+  register_hle("sceMpeg", 0x611E9E11, "sceMpegQueryStreamSize", h_zero);
+  register_hle("sceMpeg", 0xB5F6DC87, "sceMpegRingbufferPut", h_zero);
+  register_hle("sceMpeg", 0xFE246728, "sceMpegGetAvcAu", h_mpeg_no_data);
+  register_hle("sceMpeg", 0x0E3C2E9D, "sceMpegAvcDecode", h_mpeg_no_data);
+  register_hle("sceMpeg", 0xE1CE83A7, "sceMpegGetAtracAu", h_mpeg_no_data);
+  register_hle("sceMpeg", 0x800C44DF, "sceMpegAtracDecode", h_mpeg_no_data);
+  register_hle("sceMpeg", 0x606A4649, "sceMpegDelete", h_zero);
+  register_hle("sceMpeg", 0x42560F23, "sceMpegRegistStream", h_mpeg_stream);
+  register_hle("sceMpeg", 0x591A4AA2, "sceMpegUnRegistStream", h_zero);
+  register_hle("sceMpeg", 0xA780CF7E, "sceMpegMallocAvcEsBuf", h_mpeg_stream);
   register_hle("scePower", 0x04B7766E, "scePowerRegisterCallback", h_zero);
   register_hle("sceImpose", 0x36AA6E91, "sceImposeSetLanguageMode", h_zero);
   register_hle("sceOpenPSID", 0xC69BEBCE, "sceOpenPSIDGetOpenPSID", h_openpsid);

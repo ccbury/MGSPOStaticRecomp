@@ -479,14 +479,13 @@ void h_dclose(Cpu& c) { ret(c, g_dirs.erase(static_cast<int>(arg(c, 0))) ? 0 : E
 void h_devctl(Cpu& c) {
   std::string dev = lower(cstr(arg(c, 0)));
   uint32_t cmd = arg(c, 1), in = arg(c, 2), out = arg(c, 4);
-  (void)in;
   if (dev.rfind("fatms", 0) == 0 || dev.rfind("ms", 0) == 0) {
     switch (cmd) {
       case 0x02425823:  // is the memory stick inserted
         put32(out, 1);
         return ret(c, 0);
-      case 0x02425818: {  // free space: pointer to {maxClusters, freeClusters, maxSectors, sectorSize, sectorCount}
-        uint32_t info = lw(out);
+      case 0x02425818: {  // free space: indata points to a pointer to {maxClusters, freeClusters, maxSectors, sectorSize, sectorCount}
+        uint32_t info = in ? lw(in) : (out ? lw(out) : 0);
         if (info) {
           sw(info, 0x8000);
           sw(info + 4, 0x7000);

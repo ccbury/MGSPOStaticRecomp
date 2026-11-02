@@ -19,6 +19,10 @@
 #include "tables.h"
 #include "funcs.h"
 
+static void usage(const char* prog);
+
+namespace psp { namespace k { void display_set_dump_path(const std::string& p); void display_set_auto_buttons(uint32_t mask); } }
+
 static void usage(const char* prog) {
   std::fprintf(stderr,
                "usage: %s <module.elf> [--disc <dir>] [--save <dir>] [--iso <file>] [--modules <dir>] [--headless] [--trace] [--report <file>]\n"
@@ -31,6 +35,10 @@ static void usage(const char* prog) {
                "  --report  write the list of imports that were called to a file\n"
                "  --ge-dump write every GE command that is executed to a file\n"
                "  --ge-stats print GE command/draw statistics when the run ends\n"
+               "  --fault-dump <addr> <len>  hex dump this guest memory range in fault reports\n"
+               "  --watch <addr> <len>  log guest stores to a range (build with -DMGSPO_WATCH=ON)\n"
+               "  --dump-frame <png>  keep writing the displayed frame to this PNG (local debugging aid)\n"
+               "  --auto-press <mask>  periodically press these PSP buttons (e.g. 0x8 = Start) for unattended runs\n"
                "  --timeout stop after this many seconds (and write the report)\n",
                prog);
 }
@@ -62,10 +70,20 @@ int main(int argc, char** argv) {
     else if (a == "--modules" && more) cfg.moduleDir = argv[++i];
     else if (a == "--report" && more) reportPath = argv[++i];
     else if (a == "--timeout" && more) timeoutSec = std::atoi(argv[++i]);
+    else if (a == "--fault-dump" && i + 2 < argc) {
+      uint32_t addr = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
+      psp::set_fault_dump(addr, static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)));
+    }
+    else if (a == "--watch" && i + 2 < argc) {
+      uint32_t addr = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
+      psp::set_watch(addr, static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)));
+    }
     else if (a == "--headless") cfg.headless = true;
     else if (a == "--trace") cfg.trace = true;
     else if (a == "--ge-dump" && more) geOpt.dumpPath = argv[++i];
     else if (a == "--ge-stats") geOpt.stats = true;
+    else if (a == "--auto-press" && more) psp::k::display_set_auto_buttons(static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)));
+    else if (a == "--dump-frame" && more) psp::k::display_set_dump_path(argv[++i]);
     else if (module.empty() && a[0] != '-') module = a;
     else {
       usage(argv[0]);

@@ -82,10 +82,10 @@ struct CallbackHost : ge::Host {
   bool have = false;
   void on_signal(uint32_t data) override {
     if (have && cb.signalFunc)
-      raise_guest_call(cb.signalFunc, static_cast<uint32_t>(listId), cb.signalArg, data & 0xFFFF, 0);
+      raise_guest_call(cb.signalFunc, data & 0xFFFF, cb.signalArg, static_cast<uint32_t>(listId), 0);
   }
   void on_finish(uint32_t data) override {
-    if (have && cb.finishFunc) raise_guest_call(cb.finishFunc, static_cast<uint32_t>(listId), cb.finishArg, data, 0);
+    if (have && cb.finishFunc) raise_guest_call(cb.finishFunc, data & 0xFFFF, cb.finishArg, static_cast<uint32_t>(listId), 0);
   }
 };
 

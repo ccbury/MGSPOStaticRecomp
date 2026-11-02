@@ -96,22 +96,57 @@ are seeded as roots.
 Lifting all 106 stages gives about 321K functions (181K distinct, roughly 440 MB of C++), so it is
 not done by default.
 
+## Debugging aids
+
+- Every lifted function keeps a small shadow call stack. A guest fault (bad address, call into an
+  unlifted overlay, ...) prints the faulting pc, the last 32 callers, all registers and, with
+  `--fault-dump <addr> <len>`, a hex dump of a memory range.
+- `--watch <addr> <len>` logs every guest store into a range along with the call stack. It needs a
+  build configured with `-DMGSPO_WATCH=ON`, since it adds a check to every store.
+- `--dump-frame <png>` rewrites a PNG of the displayed frame about every 30 vblanks. Keep it
+  outside the repo.
+- `--auto-press <mask>` holds PSP buttons periodically for unattended runs (Start is `0x8`).
+- `--ge-stats` prints draw/triangle counts; `--ge-dump` writes the executed GE commands.
+
 ## Where it stops
 
 With the init, r_main01/02, r_net01, gsmenu and title stages lifted the game loads three stages,
-inflates the big stage archive through the lifted zlib module and issues 77 GE lists
-(218 draws, 2552 vertices), but still rasterises 0 triangles. It then stops in `Main` with
-`bad guest address 0x00000000`.
+inflates the big stage archive and then runs without faulting (checked up to 100 s headless). The
+screen stays black: the game sits in the intro movie loop waiting on `sceMpeg`.
+
+Faults found and fixed on the way:
+
+- `bad guest address 6`/`0` came from three separate problems:
+  1. `sceIoDevctl` 0x02425818 (memory stick free space) passes its info pointer in the input
+     buffer, not the output buffer.
+  2. The GE signal/finish callbacks were called with `(listId, ..., signal)`. The game's callback
+     takes the 16-bit signal/finish data as its first argument and stores it in a ring buffer, so
+     the wrong argument order overwrote the resource table at 0x08A31C6C.
+  3. Lifter: function discovery added tail-jump roots before switch-case roots, so a branch
+     into a function that was split later pointed at a non-root and ended up as
+     `call to 0x08B9B7FC in an overlay that is not loaded or not lifted`. Both root passes now
+     run until neither adds anything.
+- `sceUtility` `0x9A1C91D7` is `sceUtilityMsgDialogGetStatus`. The game polls it every frame;
+  returning 0 (no dialog) is correct for now, it was not related to the fault.
+- 0 triangles: the game programs the GE framebuffer, depth and texture/CLUT addresses as plain
+  VRAM offsets (e.g. 0x44000) with no 0x04 region byte. The rasteriser rejected them
+  (`begin()` failed for every draw). Addresses below 2 MB with no region bits are now treated as
+  VRAM. Triangles and sprites now rasterise (tens of thousands per run, none culled).
+
+What the screen shows: black. The draws that do reach the framebuffer are full-screen fade quads
+(alpha ramping up) over a black background, i.e. the logo/intro sequence has nothing to show
+because the movie is not played.
 
 Next blockers, roughly in order:
 
-1. **Null dereference after the title stage starts.** Need the faulting pc (the error only names the
-   address). It follows `sceUtility` import `0x9A1C91D7`, which is stubbed to return 0 for now and
-   whose meaning is unknown; the real result may be a pointer or handle the game expects.
+1. **sceMpeg.** The intro movie needs PSMF demuxing plus an H.264 decoder. The player set-up calls
+   (Init, Create, RegistStream, ...) are implemented as stubs and `sceMpegGetAvcAu`,
+   `sceMpegAvcDecode`, `sceMpegGetAtracAu` and `sceMpegAtracDecode` report "no data"; the game
+   then polls forever and never leaves the movie state (Start/Cross/Circle do not skip it).
+   Either decode the movies or find out what makes the game skip them.
 2. **More stages.** Each new stage the game requests that is not lifted shows up as `not lifted`
    with its size; add it with `--stage`. Jump-table style stubs reached by computed jumps can still
    be missing from function discovery.
-3. **Triangles.** Draws so far are state/clear only; verify with `--ge-dump` once the game gets
-   further.
+3. **Textured output** has not been verified yet, since nothing non-black is drawn before the movie.
 4. **Network imports** (sceNet*, sceHttp) used by stages need stubs that report no connection.
 5. **Audio**: `sceSasCore`/`sceAtrac3plus` coverage.

@@ -502,6 +502,8 @@ void finish_thread(Thread* t, uint32_t status) {
 
 void fatal(Thread* t, const char* what) {
   std::fprintf(stderr, "stopped in thread '%s': %s\n", t->name.c_str(), what);
+  std::string rep = last_fault_report();
+  if (!rep.empty()) std::fputs(rep.c_str(), stderr);
   std::fflush(stderr);
   g_exitCode = 1;
 }
@@ -513,6 +515,7 @@ void thread_entry(Thread* t, std::shared_ptr<Run> run) {
   }
   if (run->killed) return;
   Cpu cpu;
+  set_fault_cpu(&cpu);
   cpu.r[28] = t->gp;
   cpu.r[26] = thread_local_block();
   cpu.r[29] = t->stackAddr + t->stackSize - ((t->argSize + 15) & ~15u) - 0x40;
@@ -1446,6 +1449,7 @@ int kernel_run_main(uint32_t entry, uint32_t argSize, const void* args) {
   g_cur = main;
 
   Cpu cpu;
+  set_fault_cpu(&cpu);
   cpu.r[28] = g_gp;
   cpu.r[26] = thread_local_block();
   uint32_t top = main->stackAddr + main->stackSize;
