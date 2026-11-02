@@ -2,8 +2,12 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "kernel_internal.h"
 
@@ -173,15 +177,16 @@ void osk_fill(uint32_t p) {
     sw(p + 0x1C, 0);
     uint32_t data = lw(p + 0x34);
     if (data) {
-      static const char16_t kName[] = u"SNAKE";
-      uint32_t out = lw(data + 0x2C), limit = lw(data + 0x28);
+      static const char16_t kName[] = u"JACK";
+      // data: outtextlength +0x24, outtext +0x28, result +0x2C, outtextlimit +0x30
+      uint32_t out = lw(data + 0x28), limit = lw(data + 0x30);
       uint32_t n = 0;
       if (out) {
         for (; kName[n] && (!limit || n < limit); ++n) sh(out + n * 2, kName[n]);
         sh(out + n * 2, 0);
       }
       sw(data + 0x24, n);
-      sw(data + 0x30, 2);  // result: text changed
+      sw(data + 0x2C, 2);  // result: text changed
     }
   }
 }
@@ -203,6 +208,81 @@ void h_osk_update(Cpu& c) {
 
 void h_osk_shutdown(Cpu& c) {
   g_osk.state = 4;
+  ret(c, 0);
+}
+
+// ---- sceUtility savedata ----
+
+constexpr uint32_t kSaveLoadNoData = 0x80110306;
+constexpr uint32_t kSaveLoadAccess = 0x80110305;
+constexpr uint32_t kSaveDeleteNoData = 0x80110345;
+
+UtilityDialog g_savedata;
+
+// Layout (SceUtilitySavedataParam): mode +0x30, gameName[13] +0x3C, saveName[20] +0x4C,
+// saveNameList +0x60, fileName[13] +0x64, dataBuf +0x74, dataBufSize +0x78, dataSize +0x7C.
+void savedata_run(uint32_t p) {
+  if (!p) return;
+  uint32_t mode = lw(p + 0x30);
+  std::string game = cstr(p + 0x3C, 13);
+  std::string name = cstr(p + 0x4C, 20);
+  uint32_t list = lw(p + 0x60);
+  if ((name.empty() || name[0] == '<') && list) name = cstr(lw(list), 20);
+  std::string file = cstr(p + 0x64, 13);
+  uint32_t buf = lw(p + 0x74), bufSize = lw(p + 0x78), dataSize = lw(p + 0x7C);
+  namespace fs = std::filesystem;
+  fs::path dir = fs::path(config().saveRoot) / "PSP" / "SAVEDATA" / (game + name);
+  fs::path path = dir / file;
+  std::error_code ec;
+  uint32_t result = 0;
+  switch (mode) {
+    case 0: case 2: case 4: {  // load
+      std::ifstream in(path, std::ios::binary);
+      if (!in || !buf) {
+        result = kSaveLoadNoData;
+        break;
+      }
+      std::vector<char> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      uint32_t n = static_cast<uint32_t>(std::min<size_t>(data.size(), bufSize ? bufSize : data.size()));
+      for (uint32_t i = 0; i < n; ++i) sb(buf + i, static_cast<uint8_t>(data[i]));
+      sw(p + 0x7C, n);
+      break;
+    }
+    case 1: case 3: case 5: {  // save
+      fs::create_directories(dir, ec);
+      std::ofstream out(path, std::ios::binary | std::ios::trunc);
+      if (!out) {
+        result = kSaveLoadAccess;
+        break;
+      }
+      for (uint32_t i = 0; buf && i < dataSize; ++i) out.put(static_cast<char>(lb(buf + i)));
+      break;
+    }
+    case 6: case 7:  // delete
+      if (!fs::remove_all(dir, ec)) result = kSaveDeleteNoData;
+      break;
+    default:  // sizes, file lists, ...: report success without data
+      break;
+  }
+  sw(p + 0x1C, result);
+}
+
+void h_save_init(Cpu& c) {
+  uint32_t p = arg(c, 0);
+  dialog_start(g_savedata, p);
+  savedata_run(p);
+  ret(c, 0);
+}
+
+void h_save_status(Cpu& c) { ret(c, static_cast<uint32_t>(dialog_status(g_savedata))); }
+
+void h_save_update(Cpu& c) {
+  dialog_update(g_savedata);
+  ret(c, 0);
+}
+
+void h_save_shutdown(Cpu& c) {
+  g_savedata.state = 4;
   ret(c, 0);
 }
 
@@ -264,6 +344,10 @@ void register_misc() {
   register_hle("sceUtility", 0xF3F76017, "sceUtilityOskGetStatus", h_osk_status);
   register_hle("sceUtility", 0x4B85C861, "sceUtilityOskUpdate", h_osk_update);
   register_hle("sceUtility", 0x3DFAEBA9, "sceUtilityOskShutdownStart", h_osk_shutdown);
+  register_hle("sceUtility", 0x50C4CD57, "sceUtilitySavedataInitStart", h_save_init);
+  register_hle("sceUtility", 0x8874DBE0, "sceUtilitySavedataGetStatus", h_save_status);
+  register_hle("sceUtility", 0xD4B95FFB, "sceUtilitySavedataUpdate", h_save_update);
+  register_hle("sceUtility", 0x9790B33C, "sceUtilitySavedataShutdownStart", h_save_shutdown);
 
   register_hle("scePower", 0x04B7766E, "scePowerRegisterCallback", h_zero);
   register_hle("sceImpose", 0x36AA6E91, "sceImposeSetLanguageMode", h_zero);
