@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "mips.h"
+#include "vfpu.h"
 
 namespace mgspo {
 
@@ -78,7 +79,11 @@ Program discover(const PrxImage& img) {
       Insn in = decode(img.word(a), a);
       ++st.totalInsns;
       switch (in.op) {
-        case Op::Vfpu: ++st.vfpuInsns; break;
+        case Op::Vfpu:
+          ++st.vfpuInsns;
+          if (decodeVfpu(in.raw) == psp::vfpu::Op::Invalid) ++st.vfpuUndecoded;
+          break;
+        case Op::Bvf: case Op::Bvt: case Op::Bvfl: case Op::Bvtl: ++st.vfpuBranches; break;
         case Op::Cop0: ++st.cop0Insns; break;
         case Op::Unknown:
         case Op::Invalid: ++st.unknownInsns; break;

@@ -20,8 +20,9 @@ add_library(mgspo STATIC
   src/prx.cpp
   src/functions.cpp
   src/emit.cpp
+  src/vfpu.cpp
 )
-target_include_directories(mgspo PUBLIC src)
+target_include_directories(mgspo PUBLIC src runtime/include)
 
 add_executable(mgspo-extract tools/extract/main.cpp)
 target_link_libraries(mgspo-extract PRIVATE mgspo)
@@ -41,6 +42,7 @@ add_library(mgspo_rt STATIC
   runtime/src/ge.cpp
   runtime/src/audio.cpp
   runtime/src/misc.cpp
+  runtime/src/vfpu.cpp
 )
 if(WIN32)
   target_sources(mgspo_rt PRIVATE runtime/src/platform_win32.cpp)
@@ -79,4 +81,7 @@ if(MGSPO_BUILD_TESTS)
   add_executable(mgspo-runtime-tests tests/test_runtime.cpp)
   target_link_libraries(mgspo-runtime-tests PRIVATE mgspo_rt)
   add_test(NAME mgspo-runtime-tests COMMAND mgspo-runtime-tests)
+  add_executable(mgspo-vfpu-tests tests/test_vfpu.cpp)
+  target_link_libraries(mgspo-vfpu-tests PRIVATE mgspo mgspo_rt)
+  add_test(NAME mgspo-vfpu-tests COMMAND mgspo-vfpu-tests)
 endif()

@@ -28,6 +28,8 @@ struct DiscoveryStats {
   uint32_t pointerRoots = 0;
   uint32_t callsOutsideCode = 0;  // jal targets that are neither code nor an import stub
   uint32_t vfpuInsns = 0;
+  uint32_t vfpuUndecoded = 0;  // VFPU words the lifter could not identify
+  uint32_t vfpuBranches = 0;   // bvf/bvt family (counted separately from vfpuInsns)
   uint32_t cop0Insns = 0;
   uint32_t unknownInsns = 0;
   uint32_t totalInsns = 0;
