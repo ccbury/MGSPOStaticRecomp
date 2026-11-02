@@ -5,7 +5,7 @@
 namespace mgspo {
 
 // Allegrex (PSP CPU) instruction set: MIPS32r2 subset plus a handful of custom ops.
-// The VFPU (COP2 and friends) is recognised but not decoded further.
+// VFPU instructions other than the CC branches decode to Op::Vfpu; vfpu.h sorts out which one.
 #define MGSPO_OPS(X)                                                                                              \
   X(Invalid) X(Sll) X(Srl) X(Sra) X(Sllv) X(Srlv) X(Srav) X(Rotr) X(Rotrv) X(Jr) X(Jalr) X(Movz) X(Movn)         \
   X(Syscall) X(Break) X(Sync) X(Mfhi) X(Mthi) X(Mflo) X(Mtlo) X(Clz) X(Clo) X(Mult) X(Multu) X(Div) X(Divu)       \
@@ -15,7 +15,7 @@ namespace mgspo {
   X(Xori) X(Lui) X(Ext) X(Ins) X(Wsbh) X(Wsbw) X(Seb) X(Seh) X(Bitrev) X(Lb) X(Lh) X(Lwl) X(Lw) X(Lbu) X(Lhu)    \
   X(Lwr) X(Sb) X(Sh) X(Swl) X(Sw) X(Swr) X(Cache) X(Ll) X(Sc) X(Lwc1) X(Swc1) X(Mfc1) X(Cfc1) X(Mtc1) X(Ctc1)    \
   X(Bc1f) X(Bc1t) X(Bc1fl) X(Bc1tl) X(AddS) X(SubS) X(MulS) X(DivS) X(SqrtS) X(AbsS) X(MovS) X(NegS)             \
-  X(RoundWS) X(TruncWS) X(CeilWS) X(FloorWS) X(CvtWS) X(CvtSW) X(CmpS) X(Cop0) X(Vfpu) X(Unknown)
+  X(RoundWS) X(TruncWS) X(CeilWS) X(FloorWS) X(CvtWS) X(CvtSW) X(CmpS) X(Bvf) X(Bvt) X(Bvfl) X(Bvtl) X(Cop0) X(Vfpu) X(Unknown)
 
 enum class Op : uint8_t {
 #define X(n) n,

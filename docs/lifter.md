@@ -39,7 +39,8 @@
 | Code words | 481,818 |
 | Functions found | 5,297 (4,892 call targets, 37 jump roots, 363 pointer roots) |
 | Switch table targets | 984 |
-| VFPU instructions | 27,657 |
+| VFPU instructions | 27,606 (+51 `bvf`/`bvt` branches, 27,657 total) |
+| VFPU instructions left as `psp::unimpl` | 0 |
 | COP0 / unknown | 0 / 0 |
 | `jal` to non-code, non-import | 4 |
 | Relocations not handled | 0 |
@@ -47,9 +48,39 @@
 Lifting takes a few seconds and produces roughly 40 files that compile with MSVC. Running the
 result with every import unimplemented gets through the module start stub and returns.
 
+## VFPU
+
+VFPU instructions are decoded in `src/vfpu.cpp` (`decodeVfpu` maps a raw word to a
+`psp::vfpu::Op`, the list of which lives in `runtime/include/psp/vfpu_ops.h`) and emitted as
+`psp::vfpu::exec(c, psp::vfpu::Op::Vadd, 0x...)`. The runtime (`runtime/src/vfpu.cpp`) pulls the
+register fields back out of the raw word, so the generated code stays small and compiles quickly.
+The `bvf`/`bvt`/`bvfl`/`bvtl` branches are ordinary `Op`s in the MIPS decoder and test
+`psp::vfpu::cc_bit`.
+
+State: `Cpu::v[128]` is eight 4x4 matrices, indexed `mtx * 16 + col * 4 + row`, and
+`Cpu::vctrl[16]` holds the control registers (SPFX, TPFX, DPFX, CC, REV, RCX0-7). Prefixes are
+applied and cleared the same way the hardware does it: every instruction except the prefix
+setters, `lv`/`sv`, `mfv`/`mtv` and the nop/sync family consumes them.
+
+Covered: arithmetic, dot products, cross products, compares and `vcmov`, the unary and
+transcendental ops, constants, matrix multiply/scale/move/fill, `vtfm`/`vhtfm`, `vrot`,
+float/int/half/byte/colour conversions, the sort and butterfly ops, `vrnd*`, loads and stores
+(including `lvl.q`/`lvr.q`/`svl.q`/`svr.q`), and `mfv`/`mtv`/`vmfvc`/`vmtvc`.
+
+Known simplifications:
+
+- `sin`, `cos`, `asin`, `exp2`, `log2`, `rcp`, `rsq` use libm, not the hardware's lookup tables, so
+  results can differ in the last bits (quarter-turn inputs are exact).
+- On the ops that force their own swizzle (`vcrs`, `vdet`, `vhdp`, ...) a user swizzle in the S/T
+  prefix is applied first and the fixed pattern is then computed from the result.
+- Matrix ops ignore S/T/D prefixes, and the transcendental ops apply the D prefix to all lanes
+  rather than only the last one.
+- `vsbn`, `vsbz`, `vlgb` and `vwbn` decode but throw at run time; none of them occur in the
+  main module (`mgspo-lift <module> --vfpu` prints a per-op histogram).
+- NaN/denormal corner cases of `vmin`/`vmax`/`vsgn` are not modelled.
+
 ## Not done yet
 
-- VFPU translation. The register file exists in `Cpu` but nothing uses it.
 - Real implementations of the imported libraries (threads, I/O, GE, display, audio, controls).
 - The game's other modules (`kjfs`, `sound2`, `zlibdec` and the per-stage PRXs) are separate
   binaries and have not been analysed.

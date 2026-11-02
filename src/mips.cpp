@@ -185,6 +185,14 @@ Insn decode(uint32_t raw, uint32_t addr) {
     case 0x38: i.op = Op::Sc; break;
     case 0x39: i.op = Op::Swc1; break;
     case 0x12:
+      if (((raw >> 21) & 31) == 8) {
+        static const Op kVBranch[4] = {Op::Bvf, Op::Bvt, Op::Bvfl, Op::Bvtl};
+        i.op = kVBranch[(raw >> 16) & 3];
+        i.cond = (raw >> 18) & 7;
+      } else {
+        i.op = Op::Vfpu;
+      }
+      break;
     case 0x18: case 0x19: case 0x1A: case 0x1B:
     case 0x32: case 0x34: case 0x35: case 0x36: case 0x37:
     case 0x3A: case 0x3C: case 0x3D: case 0x3E: case 0x3F:
@@ -204,6 +212,7 @@ bool isRelBranch(Op op) {
     case Op::Beq: case Op::Bne: case Op::Blez: case Op::Bgtz:
     case Op::Beql: case Op::Bnel: case Op::Blezl: case Op::Bgtzl:
     case Op::Bc1f: case Op::Bc1t: case Op::Bc1fl: case Op::Bc1tl:
+    case Op::Bvf: case Op::Bvt: case Op::Bvfl: case Op::Bvtl:
       return true;
     default:
       return false;
@@ -218,7 +227,7 @@ bool isLikely(Op op) {
   switch (op) {
     case Op::Bltzl: case Op::Bgezl: case Op::Bltzall: case Op::Bgezall:
     case Op::Beql: case Op::Bnel: case Op::Blezl: case Op::Bgtzl:
-    case Op::Bc1fl: case Op::Bc1tl:
+    case Op::Bc1fl: case Op::Bc1tl: case Op::Bvfl: case Op::Bvtl:
       return true;
     default:
       return false;
