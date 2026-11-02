@@ -1,9 +1,9 @@
-// sceAtrac3plus: guest-facing API. ATRAC3 streams are decoded natively (atrac3.cpp). ATRAC3+ streams are
-// accepted so the game keeps running, but they decode to silence.
+// sceAtrac3plus: guest-facing API. ATRAC3 (atrac3.cpp) and ATRAC3+ (atrac3plus.cpp) streams are decoded natively.
 #include <map>
 #include <vector>
 
 #include "atrac3.h"
+#include "atrac3plus.h"
 #include "kernel_internal.h"
 
 namespace psp {
@@ -24,6 +24,7 @@ struct Context {
   std::vector<uint8_t> file;
   atrac::At3Info info;
   atrac::Atrac3Decoder dec;
+  atrac::Atrac3PlusDecoder decPlus;
   int32_t loopNum = 0;  // -1 loops forever
   uint32_t pos = 0;     // next sample to hand out
   uint32_t skipInFrame = 0;
@@ -35,12 +36,12 @@ struct Context {
     return info.frameCount() * frame_samples();
   }
   bool decode_into(uint32_t f, int16_t* out) {
-    if (info.codec == atrac::Codec::Atrac3Plus) {
-      std::fill(out, out + kPlusFrameSamples * info.channels, 0);
-      return true;
-    }
     uint32_t off = info.dataOffset + f * info.blockAlign;
     if (off + info.blockAlign > file.size()) return false;
+    if (info.codec == atrac::Codec::Atrac3Plus) {
+      decPlus.decode_frame(file.data() + off, info.blockAlign, out);
+      return true;
+    }
     return dec.decode_frame(file.data() + off, out);
   }
   void seek(uint32_t sample) {
@@ -48,13 +49,14 @@ struct Context {
     pos = std::min(sample, total());
     frame = pos / fs;
     skipInFrame = pos % fs;
+    // the overlap and filter state need the preceding frames
+    std::vector<int16_t> tmp(size_t(fs) * info.channels);
     if (info.codec == atrac::Codec::Atrac3) {
       dec.reset();
-      // the overlap and filter state need the preceding frame
-      if (frame > 0) {
-        std::vector<int16_t> tmp(size_t(fs) * info.channels);
-        decode_into(frame - 1, tmp.data());
-      }
+      if (frame > 0) decode_into(frame - 1, tmp.data());
+    } else if (info.codec == atrac::Codec::Atrac3Plus) {
+      decPlus.reset();
+      for (uint32_t f = frame >= 2 ? frame - 2 : 0; f < frame; ++f) decode_into(f, tmp.data());
     }
   }
 };
@@ -91,6 +93,10 @@ void h_set_data_get_id(Cpu& c) {
   x.file = std::move(data);
   x.info = info;
   if (info.codec == atrac::Codec::Atrac3 && !x.dec.init(info.channels, info.blockAlign, info.jointStereo)) {
+    g_ctx.erase(id);
+    return ret(c, E_ATRAC_UNKNOWN_FORMAT);
+  }
+  if (info.codec == atrac::Codec::Atrac3Plus && !x.decPlus.init(info.channels)) {
     g_ctx.erase(id);
     return ret(c, E_ATRAC_UNKNOWN_FORMAT);
   }

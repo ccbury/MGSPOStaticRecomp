@@ -9,6 +9,7 @@
 #include <psp/runtime.h>
 
 #include "atrac3.h"
+#include "atrac3plus.h"
 #include "sas_core.h"
 
 using namespace psp;
@@ -147,6 +148,78 @@ static void test_hle() {
   CHECK(call(3, 1, 1) == 0);
 }
 
+static void test_atrac3plus() {
+  using namespace psp::atrac;
+  Atrac3PlusDecoder dec;
+  CHECK(!dec.init(0));
+  CHECK(!dec.init(3));
+  CHECK(dec.init(2));
+  std::vector<int16_t> out(kPlusSamplesPerFrame * 2, 123);
+  // Terminator-only frame: no channel data, output must be silent.
+  uint8_t term[376] = {0x60};
+  dec.decode_frame(term, sizeof(term), out.data());
+  bool silent = true;
+  for (int16_t s : out) silent = silent && s == 0;
+  CHECK(silent);
+  // Start bit set: corrupt, must not crash and must output silence.
+  uint8_t bad[376];
+  std::memset(bad, 0xFF, sizeof(bad));
+  std::fill(out.begin(), out.end(), int16_t(55));
+  CHECK(!dec.decode_frame(bad, sizeof(bad), out.data()));
+  silent = true;
+  for (int16_t s : out) silent = silent && s == 0;
+  CHECK(silent);
+  // Truncated input
+  CHECK(!dec.decode_frame(term, 0, out.data()));
+  dec.reset();
+  CHECK(dec.init(1));
+  dec.decode_frame(term, sizeof(term), out.data());
+
+  // Optional comparison against a reference decode of real data. MGSPO_AT3_FILE points at an .at3 and
+  // MGSPO_AT3_REF at a 16 bit stereo WAV produced by another decoder.
+  const char* f = std::getenv("MGSPO_AT3_FILE");
+  const char* r = std::getenv("MGSPO_AT3_REF");
+  if (f && r) {
+    auto slurp = [](const char* p) {
+      std::vector<uint8_t> v;
+      if (FILE* fp = std::fopen(p, "rb")) {
+        uint8_t tmp[65536];
+        size_t n;
+        while ((n = std::fread(tmp, 1, sizeof(tmp), fp)) > 0) v.insert(v.end(), tmp, tmp + n);
+        std::fclose(fp);
+      }
+      return v;
+    };
+    std::vector<uint8_t> in = slurp(f), ref = slurp(r);
+    At3Info info;
+    CHECK(parse_at3(in.data(), in.size(), info) && info.codec == Codec::Atrac3Plus && ref.size() > 44);
+    Atrac3PlusDecoder d;
+    CHECK(d.init(info.channels));
+    std::vector<int16_t> o(size_t(kPlusSamplesPerFrame) * info.channels);
+    size_t dataOff = 0;
+    for (size_t i = 12; i + 8 <= ref.size();) {
+      uint32_t sz = ref[i + 4] | ref[i + 5] << 8 | ref[i + 6] << 16 | uint32_t(ref[i + 7]) << 24;
+      if (!std::memcmp(&ref[i], "data", 4)) {
+        dataOff = i + 8;
+        break;
+      }
+      i += 8 + sz + (sz & 1);
+    }
+    CHECK(dataOff != 0);
+    if (!dataOff) return;
+    const int16_t* rs = reinterpret_cast<const int16_t*>(ref.data() + dataOff);
+    size_t refSamples = (ref.size() - dataOff) / 2, pos = 0;
+    int maxDiff = 0;
+    for (uint32_t i = 0; i < info.frameCount(); ++i) {
+      CHECK(d.decode_frame(in.data() + info.dataOffset + size_t(i) * info.blockAlign, info.blockAlign, o.data()));
+      for (size_t k = 0; k < o.size() && pos < refSamples; ++k, ++pos)
+        maxDiff = std::max(maxDiff, std::abs(int(o[k]) - int(rs[pos])));
+    }
+    std::printf("atrac3+ vs reference: max diff %d over %zu samples\n", maxDiff, pos);
+    CHECK(pos > 0 && maxDiff <= 2);
+  }
+}
+
 int main() {
   init_memory();
   KernelConfig cfg;
@@ -162,6 +235,7 @@ int main() {
   test_mix_and_end();
   test_simple_adsr();
   test_atrac_parse();
+  test_atrac3plus();
   test_hle();
 
   if (g_failures) {
