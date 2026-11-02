@@ -1,9 +1,14 @@
 // mgspo-lift: turn a PSP PRX/ELF into C++ sources for the runtime to link against.
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
+#include <filesystem>
 #include <iostream>
 #include <map>
 #include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
 
 #include "bytes.h"
 #include "emit.h"
@@ -15,7 +20,7 @@
 using namespace mgspo;
 
 static void usage() {
-  std::cerr << "usage: mgspo-lift <module.elf> <outdir> [--base 0xADDR] [--per-file N]\n"
+  std::cerr << "usage: mgspo-lift <module.elf> <outdir> [--base 0xADDR] [--per-file N] [--helper <module.prx>]...\n"
                "       mgspo-lift <module.elf> --stats [--base 0xADDR]\n"
                "       mgspo-lift <module.elf> --vfpu\n"
                "       mgspo-lift <module.elf> --disasm <start> <count>\n";
@@ -68,12 +73,14 @@ int main(int argc, char** argv) {
     uint32_t base = kDefaultBase;
     size_t perFile = 150;
     bool stats = false, disasm = false, vfpuHist = false;
+    std::vector<std::string> helpers;
     uint32_t dStart = 0, dCount = 0;
     for (int i = 2; i < argc; ++i) {
       std::string a = argv[i];
       if (a == "--base" && i + 1 < argc) base = static_cast<uint32_t>(std::stoul(argv[++i], nullptr, 0));
       else if (a == "--per-file" && i + 1 < argc) perFile = std::stoul(argv[++i]);
       else if (a == "--stats") stats = true;
+      else if (a == "--helper" && i + 1 < argc) helpers.push_back(argv[++i]);
       else if (a == "--vfpu") vfpuHist = true;
       else if (a == "--disasm" && i + 2 < argc) {
         disasm = true;
@@ -110,7 +117,40 @@ int main(int argc, char** argv) {
     EmitOptions opts;
     opts.outDir = out;
     opts.funcsPerFile = perFile;
-    EmitResult r = emitAll(prog, opts);
+
+    // Helper modules go right after the main image, each on its own page boundary, so the runtime can
+    // reserve them up front and the generated code can use absolute addresses.
+    std::deque<PrxImage> helperImgs;
+    std::deque<Program> helperProgs;
+    std::vector<ModuleUnit> units;
+    {
+      ModuleUnit m;
+      m.prog = &prog;
+      m.name = img.info.module.name;
+      units.push_back(m);
+    }
+    uint32_t next = img.base + static_cast<uint32_t>(img.mem.size());
+    uint32_t importBase = static_cast<uint32_t>(prog.imports.size());
+    for (const auto& path : helpers) {
+      next = (next + 0xFFF) & ~0xFFFu;
+      next += 0x1000;
+      helperImgs.push_back(loadPrx(readFile(path), next));
+      const PrxImage& h = helperImgs.back();
+      helperProgs.push_back(discover(h, importBase));
+      const Program& hp = helperProgs.back();
+      importBase += static_cast<uint32_t>(hp.imports.size());
+      next += static_cast<uint32_t>(h.mem.size());
+      ModuleUnit u;
+      u.prog = &hp;
+      u.name = h.info.module.name;
+      u.file = fs::path(path).filename().string();
+      std::printf("helper %-12s base 0x%08X size 0x%X functions %zu imports %zu (unknown insns %u)\n",
+                  u.name.c_str(), h.base, static_cast<unsigned>(h.mem.size()), hp.funcs.size(), hp.imports.size(),
+                  hp.stats.unknownInsns);
+      units.push_back(u);
+    }
+
+    EmitResult r = emitAll(units, opts);
     std::printf("wrote %zu files, %zu functions, %.1f MB, %zu untranslated instructions\n", r.files,
                 r.functions, r.bytes / 1048576.0, r.unimplemented);
     return 0;

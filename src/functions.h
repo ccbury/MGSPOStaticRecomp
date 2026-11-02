@@ -47,6 +47,6 @@ struct Program {
   bool isStub(uint32_t addr) const { return stubIndex.count(addr) != 0; }
 };
 
-Program discover(const PrxImage& img);
+Program discover(const PrxImage& img, uint32_t importBase = 0);
 
 }  // namespace mgspo

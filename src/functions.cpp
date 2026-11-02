@@ -43,11 +43,11 @@ const Function* Program::containing(uint32_t addr) const {
   return addr < it->end ? &*it : nullptr;
 }
 
-Program discover(const PrxImage& img) {
+Program discover(const PrxImage& img, uint32_t importBase) {
   Program prog;
   prog.img = &img;
 
-  uint32_t idx = 0;
+  uint32_t idx = importBase;
   for (const auto& m : img.info.imports) {
     for (const auto& f : m.funcs) {
       ImportRef r;

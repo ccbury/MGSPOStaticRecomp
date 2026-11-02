@@ -162,9 +162,14 @@ PrxImage loadPrx(const Bytes& elf, uint32_t base) {
       uint8_t varCount = img.mem[a - base + 9];
       uint16_t funcCount = rd16(&img.mem[a - base + 10]);
       uint32_t table = img.word(a + 12);
+      std::string lib;
+      if (uint32_t np = img.word(a); np && img.contains(np)) {
+        for (uint32_t q = np; img.contains(q, 1) && img.mem[q - base]; ++q) lib.push_back(static_cast<char>(img.mem[q - base]));
+      }
       for (uint16_t i = 0; i < funcCount; ++i) {
         uint32_t fn = img.word(table + (static_cast<uint32_t>(funcCount) + varCount) * 4 + i * 4);
         if (img.inCode(fn)) img.exportedFuncs.push_back(fn);
+        img.exports.push_back({lib, img.word(table + i * 4), fn});
       }
       a += static_cast<uint32_t>(entLen) * 4;
     }
