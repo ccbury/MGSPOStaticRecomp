@@ -37,7 +37,7 @@ static void usage(const char* prog) {
                "  --ge-stats print GE command/draw statistics when the run ends\n"
                "  --fault-dump <addr> <len>  hex dump this guest memory range in fault reports\n"
                "  --watch <addr> <len>  log guest stores to a range (build with -DMGSPO_WATCH=ON)\n"
-               "  --press <sec:mask,...>  scripted one-shot button presses at the given run times (seconds)\n"
+               "  --press <sec:mask,...>  scripted presses: time:mask[:hold[:lx:ly]] with time/hold in game seconds, stick -128..127\n"
                "  --dump-frame <png>  keep writing the displayed frame to this PNG (local debugging aid)\n"
                "  --auto-press <mask>  periodically press these PSP buttons (e.g. 0x8 = Start) for unattended runs\n"
                "  --timeout stop after this many seconds (and write the report)\n",
