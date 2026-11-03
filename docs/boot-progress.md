@@ -206,8 +206,7 @@ In-game and pause menu scenes (this machine, one guest thread, Release build):
 - 100 s run: about 860 M fragments, 10.8 M triangles in 1260 lists, about 41 s in the rasteriser (clear 2.2 s, flat 8 s, textured 14.6 s, textured+blend 14.4 s), so roughly 45-50 ns per fragment and about 6-7 screens of overdraw per frame.
 - Tried: resolved palette per draw, cached keep mask, per-row span narrowing and skipping unused attribute interpolation in triangles. None of them moved the numbers measurably, so the cost is in the per-fragment pipeline (generic state checks, float to int conversions, blend factor switch) rather than coverage tests.
 
-Next steps for speed: a specialised fragment path for the common state combinations (through-mode sprites with CLUT8 textures, modulate/replace, simple alpha blend, no depth/stencil), then tile-based multithreaded fill. The lifted guest code was not the limit in these runs (GE plus present account for most of the wall time), but it has not been profiled separately.
-
+After the fast rasteriser (see `docs/ge.md`): 16-19 flips/s in the cell, GE 290-390 ms/s, about 10 ns per fragment. A sampling run (`--sample`) shows guest code at about 1.5% of samples and the process mostly waiting for vblank, so the lifted code is not a limit. Remaining ideas: SIMD for the CLUT8 sampler, cheaper per-draw setup (vertex vector allocation, texture hashing), and fast paths for the draws that still fall back (secondary colour).
 ### Remaining blockers
 
 - Frame rate in game (see above).

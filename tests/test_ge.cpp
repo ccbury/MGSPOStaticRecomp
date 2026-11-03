@@ -8,6 +8,7 @@
 #include <psp/runtime.h>
 
 #include "gpu.h"
+#include "raster_fast.h"
 
 using namespace psp;
 
@@ -547,6 +548,100 @@ static void test_syscalls() {
   CHECK(call_import(DrawSync, 1) == 3);
 }
 
+// Renders the same random scene with the span rasteriser and with the reference path and compares VRAM.
+static void render_scene(ge::Gpu& g, int variant, uint32_t seed) {
+  struct TV {
+    float u, v;
+    uint32_t col;
+    float x, y, z;
+  };
+  uint32_t s = seed;
+  auto rnd = [&]() {
+    s = s * 1664525u + 1013904223u;
+    return (s >> 8) & 0xFFFF;
+  };
+  const int n = 60;
+  std::vector<TV> tv(n * 3);
+  for (int t = 0; t < n; ++t) {
+    float cx = rnd() % 480, cy = rnd() % 272, sz = 4 + rnd() % 70;
+    float z = 1000 + rnd() % 60000;
+    for (int k = 0; k < 3; ++k) {
+      TV& v = tv[t * 3 + k];
+      v.x = cx + (static_cast<int>(rnd() % 1000) - 500) / 1000.0f * sz;
+      v.y = cy + (static_cast<int>(rnd() % 1000) - 500) / 1000.0f * sz;
+      v.z = z + k * 3;
+      v.u = (rnd() % 1500) / 1000.0f;
+      v.v = (rnd() % 1500) / 1000.0f;
+      v.col = (variant & 1) ? (0x80000000u | rnd() | (rnd() << 16)) : (0xFF000000u | rnd() | (rnd() << 16));
+      if (variant & 8) v.col = (v.col & 0xFF000000u) | 0x00FFFFFF;
+    }
+  }
+  std::memcpy(ptr(kVerts), tv.data(), tv.size() * sizeof(TV));
+  const int fmt = (variant & 16) ? 1 : 3;
+  Builder b;
+  b.setup(fmt);
+  b.add(cmd(0x9E, 0x088000)).add(cmd(0x9F, 0x040000 | 512));
+  b.add(cmd(0xD3, 0x401)).add(cmd(0xE7, 0));
+  b.add(cmd(0xD3, 0));
+  if (variant & 2) {
+    b.add(cmd(0x23, 1)).add(cmd(0xDE, 4));
+    b.add(cmd(0xE7, 0));
+  }
+  if (variant & 1) b.add(cmd(0x21, 1)).add(cmd(0xDF, 2 | (3 << 4)));
+  if (variant & 4) {
+    b.add(cmd(0x1E, 1)).add(cmd(0xA0, kTex & 0xFFFFFF)).add(cmd(0xA8, ((kTex >> 8) & 0xFF0000) | 16));
+    b.add(cmd(0xB8, 4 | (4 << 8))).add(cmd(0xC3, 3)).add(cmd(0xC9, (variant & 32) ? 0 : 1 | (1 << 8)));
+    if (variant & 64) b.add(cmd(0xC6, 1 | (1 << 8)));
+  }
+  b.vertex(kVerts, 0x800000 | (7 << 2) | (3 << 7) | 3).prim(3, n * 3).finish();
+  exec(g, b);
+}
+
+static void test_fast_matches_reference() {
+  write_tex_8888(kTex, 16, 16);
+  int bad = 0;
+  for (int variant = 0; variant < 128; ++variant) {
+    std::vector<uint8_t> out[2];
+    for (int m = 0; m < 2; ++m) {
+      ge::fast::set_mode(m ? ge::fast::Mode::Reference : ge::fast::Mode::Fast);
+      clear_vram();
+      ge::Gpu g;
+      render_scene(g, variant, 1234 + variant);
+      out[m].assign(ptr(kVram), ptr(kVram) + 0x90000);
+    }
+    // The span path snaps vertices to 1/16 pixel like the hardware, the reference works in floats, so edge
+    // pixels may differ and colours may be off by a rounding step. Anything beyond that is a bug.
+    const bool is565 = (variant & 16) != 0;
+    const int bpp = is565 ? 2 : 4;
+    size_t cover = 0, colour = 0, total = 0;
+    int worst = 0;
+    for (int i = 0; i < 512 * 272; ++i) {
+      uint32_t p[2] = {0, 0};
+      for (int m = 0; m < 2; ++m) std::memcpy(&p[m], &out[m][i * bpp], bpp);
+      if (p[0] || p[1]) ++total;
+      if (p[0] == p[1]) continue;
+      if (!p[0] || !p[1]) {
+        ++cover;
+        continue;
+      }
+      int d = 0;
+      if (is565) {
+        for (int sh : {0, 5, 10}) d = std::max(d, std::abs(static_cast<int>((p[0] >> sh) & 31) - static_cast<int>((p[1] >> sh) & 31)) * 8);
+      } else {
+        for (int sh : {0, 8, 16, 24}) d = std::max(d, std::abs(static_cast<int>((p[0] >> sh) & 255) - static_cast<int>((p[1] >> sh) & 255)));
+      }
+      worst = std::max(worst, d);
+      if (d > 8) ++colour;
+    }
+    if (colour * 100 > total * 3 || cover * 100 > total * 2) {
+      std::printf("variant %d: %zu of %zu pixels differ in coverage, %zu in colour (worst %d)\n", variant, cover, total, colour, worst);
+      ++bad;
+    }
+  }
+  ge::fast::set_mode(ge::fast::Mode::Fast);
+  CHECK(bad == 0);
+}
+
 int main() {
   init_memory();
   test_clear_and_sprite();
@@ -569,6 +664,7 @@ int main() {
   test_bezier();
   test_indexed_strip();
   test_syscalls();
+  test_fast_matches_reference();
   if (g_failures == 0) std::printf("ge tests passed\n");
   return g_failures ? 1 : 0;
 }

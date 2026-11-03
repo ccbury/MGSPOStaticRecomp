@@ -14,6 +14,7 @@
 #include <psp/kernel.h>
 #include <psp/runtime.h>
 
+#include "sampler.h"
 #include "bytes.h"
 #include "prx.h"
 #include "tables.h"
@@ -37,6 +38,7 @@ static void usage(const char* prog) {
                "  --ge-stats print GE command/draw statistics when the run ends\n"
                "  --fault-dump <addr> <len>  hex dump this guest memory range in fault reports\n"
                "  --watch <addr> <len>  log guest stores to a range (build with -DMGSPO_WATCH=ON)\n"
+               "  --sample [delay]  sample thread instruction pointers (after delay seconds) and print where time went at exit\n"
                "  --profile  print frame rate, GE and present times every 5 seconds\n"
 "  --press <sec:mask,...>  scripted presses: time:mask[:hold[:lx:ly]] with time/hold in game seconds, stick -128..127\n"
                "  --dump-frame <png>  keep writing the displayed frame to this PNG (local debugging aid)\n"
@@ -54,6 +56,7 @@ static void write_report(const std::string& path) {
   } else {
     psp::write_import_report(stderr);
   }
+  psp::prof::sampler_report(stderr);
   psp::ge_write_stats(stderr);
   psp::kernel_dump_threads(stderr);
   std::fflush(nullptr);
@@ -81,6 +84,7 @@ int main(int argc, char** argv) {
       uint32_t addr = static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0));
       psp::set_watch(addr, static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)));
     }
+    else if (a == "--sample") psp::prof::sampler_start(1000, more && argv[i + 1][0] != '-' ? std::atoi(argv[++i]) : 0);
     else if (a == "--headless") cfg.headless = true;
     else if (a == "--trace") cfg.trace = true;
     else if (a == "--ge-dump" && more) geOpt.dumpPath = argv[++i];

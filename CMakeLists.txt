@@ -48,6 +48,7 @@ add_library(mgspo_rt STATIC
   runtime/src/ge.cpp
   runtime/src/gpu.cpp
   runtime/src/gpu_draw.cpp
+  runtime/src/raster_fast.cpp
   runtime/src/audio.cpp
   runtime/src/sas_core.cpp
   runtime/src/sas.cpp
@@ -66,10 +67,10 @@ add_library(mgspo_rt STATIC
   runtime/src/vfpu.cpp
 )
 if(WIN32)
-  target_sources(mgspo_rt PRIVATE   runtime/src/platform_win32.cpp runtime/src/video_decoder_mf.cpp)
-    target_link_libraries(mgspo_rt PUBLIC user32 gdi32 winmm mfplat mfuuid ole32)
+  target_sources(mgspo_rt PRIVATE   runtime/src/platform_win32.cpp   runtime/src/video_decoder_mf.cpp runtime/src/sampler_win32.cpp)
+      target_link_libraries(mgspo_rt PUBLIC user32 gdi32 winmm mfplat mfuuid ole32 dbghelp)
 else()
-  target_sources(mgspo_rt PRIVATE runtime/src/platform_null.cpp runtime/src/video_decoder_null.cpp)
+  target_sources(mgspo_rt PRIVATE runtime/src/platform_null.cpp runtime/src/video_decoder_null.cpp runtime/src/sampler_null.cpp)
   find_package(Threads REQUIRED)
   target_link_libraries(mgspo_rt PUBLIC Threads::Threads)
 endif()
