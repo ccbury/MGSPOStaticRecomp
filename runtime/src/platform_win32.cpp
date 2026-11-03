@@ -208,19 +208,12 @@ Pad poll_pad() {
       p.gamepadDirections = ((b & 1) ? 0x10 : 0) | ((b & 8) ? 0x20 : 0) |
                             ((b & 2) ? 0x40 : 0) | ((b & 4) ? 0x80 : 0);
       p.buttons |= p.gamepadDirections;
-      p.cameraDirections = camera_directions(st.pad.rx, st.pad.ry);
       p.gamepadActive = true;
-      if (b & 0x0010) p.buttons |= 0x8;
-      if (b & 0x0020) p.buttons |= 0x1;
-      if (b & 0x0100) p.buttons |= 0x100;
-      if (b & 0x0200) p.buttons |= 0x200;
-      if (b & 0x1000) p.buttons |= 0x4000;
-      if (b & 0x2000) p.buttons |= 0x2000;
-      if (b & 0x4000) p.buttons |= 0x8000;
-      if (b & 0x8000) p.buttons |= 0x1000;
-      auto axis = [](SHORT v) { return std::abs(v) < 8000 ? 0 : v / 258; };
-      dx += axis(st.pad.lx);
-      dy -= axis(st.pad.ly);
+      p.buttons |= controls_gamepad_buttons(b, st.pad.lt, st.pad.rt);
+      p.gamepadLx = st.pad.lx;
+      p.gamepadLy = st.pad.ly;
+      p.gamepadRx = st.pad.rx;
+      p.gamepadRy = st.pad.ry;
     }
   }
   p.lx = static_cast<uint8_t>(128 + std::max(-128, std::min(127, dx)));

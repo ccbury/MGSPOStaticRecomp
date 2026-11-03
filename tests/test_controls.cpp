@@ -1,5 +1,6 @@
 #include <psp/runtime.h>
 #include <psp/kernel.h>
+#include "../runtime/src/platform.h"
 #include <cstdio>
 #include <stdexcept>
 
@@ -87,6 +88,112 @@ void testRouting() {
   psp::controls_init(false);
   sample(0x10, 0x80);
   CHECK(gameplay() == 0x10 && equipment() == 0x10);
+}
+
+void testGamepadMapping() {
+  psp::controls_init(true);
+  CHECK(psp::controls_gamepad_buttons(0, 30, 30) == 0);
+  CHECK(psp::controls_gamepad_buttons(0, 31, 0) == 0x200);
+  CHECK(psp::controls_gamepad_buttons(0, 0, 31) == 0x8000);
+  CHECK(psp::controls_gamepad_buttons(0, 255, 255) == 0x8200);
+  CHECK(psp::controls_gamepad_buttons(0x0200, 0, 0) == 0x2000);
+  CHECK(psp::controls_gamepad_buttons(0x2000, 0, 0) == 0x2000);
+  CHECK(psp::controls_gamepad_buttons(0x4000, 0, 0) == 0x8000);
+  auto frame = [](uint16_t b, uint8_t lt, uint8_t rt) {
+    sample(0, 0, 0, psp::controls_gamepad_buttons(b, lt, rt));
+  };
+  // Aliases are combined before guest edge detection, not released independently.
+  uint32_t previous = 0;
+  for (auto input : {std::pair<uint16_t, uint8_t>{0x4000, 0}, {0x4000, 255}, {0, 255}, {0, 0}}) {
+    uint32_t next = psp::controls_gamepad_buttons(input.first, 255, input.second);
+    CHECK((next & 0x200) != 0);  // LT remains independent of RT.
+    uint32_t released = previous & ~next;
+    CHECK((released & 0x8000) == (input.first == 0 && input.second == 0 ? 0x8000u : 0u));
+    previous = next;
+    frame(input.first, 255, input.second);
+    CHECK(gameplay() == next && equipment() == next);
+  }
+  previous = 0;
+  for (uint16_t input : {0x2000, 0x2200, 0x0200, 0x0000}) {
+    uint32_t next = psp::controls_gamepad_buttons(input, 0, 0);
+    CHECK((next & 0x200) == 0);  // RB never enters first person.
+    CHECK((previous & ~next) == (input == 0 ? 0x2000u : 0u));
+    previous = next;
+  }
+  // Release the trigger/shoulder alias first as well as the face-button alias first.
+  CHECK(psp::controls_gamepad_buttons(0x4000, 0, 255) ==
+        psp::controls_gamepad_buttons(0x4000, 0, 0));
+  CHECK(psp::controls_gamepad_buttons(0x2200, 0, 0) ==
+        psp::controls_gamepad_buttons(0x2000, 0, 0));
+  psp::controls_init(false);
+  CHECK(psp::controls_gamepad_buttons(0x0200, 255, 255) == 0x200);
+  CHECK(psp::controls_gamepad_buttons(0, 255, 255) == 0);
+  CHECK(psp::controls_gamepad_buttons(0xF330, 0, 0) == 0xF309);
+}
+
+void testStickRoles() {
+  psp::controls_init(true);
+  psp::sh(pad + 0x1E, 0);
+  auto route = [](uint32_t buttons, int16_t lx, int16_t ly, int16_t rx, int16_t ry) {
+    psp::plat::Pad p;
+    p.gamepadActive = true;
+    p.buttons = buttons;
+    p.gamepadLx = lx; p.gamepadLy = ly;
+    p.gamepadRx = rx; p.gamepadRy = ry;
+    psp::controls_route_sticks(p);
+    return p;
+  };
+  auto p = route(0, 32767, 0, 0, 32767);
+  CHECK(p.lx == 255 && p.ly == 128 && p.cameraDirections == 0x10);
+  p = route(0x200, 32767, 0, 0, 32767);
+  CHECK(p.lx == 128 && p.ly == 1 && p.cameraDirections == 0x20);
+  // Right stick only cannot move; left stick only cannot aim in native first person.
+  p = route(0x200, 0, 0, -32768, 32767);
+  CHECK(p.lx == 1 && p.ly == 1 && p.cameraDirections == 0);
+  p = route(0x200, -32768, 32767, 0, 0);
+  CHECK(p.lx == 128 && p.ly == 128 && p.cameraDirections == 0x90);
+  sample(0x20, p.cameraDirections, 0, 0x200);
+  CHECK(gameplay() == 0x290 && equipment() == 0x200);
+  CHECK(psp::lw(pad) == 0x220);  // Physical D-pad remains available to menus.
+  p = route(0x200, 7849, -7849, 8689, -8689);
+  CHECK(p.lx == 128 && p.ly == 128 && p.cameraDirections == 0);
+  p = route(0x200, 7850, -7850, 8690, -8690);
+  CHECK(p.lx > 128 && p.ly > 128 && p.cameraDirections == 0x60);
+  p = route(0x2000, 32767, 0, 0, 32767);
+  CHECK(p.lx == 255 && p.ly == 128 && p.cameraDirections == 0x10);
+  for (uint16_t inhibit : {1, 2, 4}) {
+    psp::sh(pad + 0x1E, inhibit);
+    p = route(0x200, 32767, 0, 0, 32767);
+    CHECK(p.lx == 255 && p.ly == 128 && p.cameraDirections == 0x10);
+  }
+  psp::sh(pad + 0x1E, 0);
+  for (auto block : {std::pair<uint32_t, uint32_t>{0x08A5CB7C, 0x2000},
+                    {0x08A5CB80, 0x8000}, {0x08A5CB74, 0x80000000u},
+                    {0x08A5CB78, 0x80000000u}, {0x08A5CBA0, 1}}) {
+    psp::sw(block.first, block.second);
+    p = route(0x200, 32767, 0, 0, 32767);
+    CHECK(p.lx == 255 && p.ly == 128 && p.cameraDirections == 0x10);
+    psp::sw(block.first, 0);
+  }
+  psp::plat::Pad keyboard;
+  keyboard.buttons = 0x200;
+  keyboard.lx = 192; keyboard.ly = 64;
+  psp::controls_route_sticks(keyboard);
+  CHECK(keyboard.lx == 192 && keyboard.ly == 64 && keyboard.cameraDirections == 0);
+  keyboard.gamepadActive = true;
+  keyboard.gamepadRx = 32767;
+  keyboard.gamepadRy = -32768;
+  psp::controls_route_sticks(keyboard);
+  CHECK(keyboard.lx == 255 && keyboard.ly == 191 && keyboard.cameraDirections == 0);
+  keyboard = {};
+  keyboard.gamepadLx = keyboard.gamepadRx = 32767;
+  psp::controls_route_sticks(keyboard);
+  CHECK(keyboard.lx == 128 && keyboard.ly == 128 && keyboard.cameraDirections == 0);
+  p = route(0, 0, 0, 0, 0);
+  CHECK(p.lx == 128 && p.ly == 128 && p.cameraDirections == 0);
+  psp::controls_init(false);
+  p = route(0x200, 32767, 0, 0, 32767);
+  CHECK(p.lx == 255 && p.ly == 128 && p.cameraDirections == 0x10);
 }
 
 void testNativeSelection() {
@@ -180,6 +287,29 @@ void firmwareDriver(psp::Cpu& c) {
   psp::sw(pad, 0x4090);
   psp::controls_guest_sample(pad, source);
   CHECK(gameplay() == 0x40B0 && equipment() == 0x4080);
+  // Both scripted sticks pass through the same first-person router as XInput.
+  psp::k::display_set_gamepad_script("0:0x200:10:0:127:127:0");
+  psp::k::display_set_press_script("0:0:10:0:0");
+  for (uint32_t import = 0; import != 4; ++import) {
+    c.r[4] = buffer;
+    c.r[5] = 2;
+    psp::hle(c, import);
+    uint32_t expected = import >= 2 ? ~0x4290u : 0x4290u;
+    CHECK(psp::lw(buffer + 4) == expected && psp::lw(buffer + 20) == expected);
+    // Raw --press analog override still wins, without affecting gamepad direction metadata.
+    CHECK(psp::lbu(buffer + 8) == 192 && psp::lbu(buffer + 9) == 64);
+  }
+  psp::sw(source + 4, 0x4290);
+  psp::sw(pad, 0x4290);
+  psp::controls_guest_sample(pad, source);
+  CHECK(gameplay() == 0x42A0 && equipment() == 0x4280);
+  CHECK((gameplay(0x18) & 0xF0) == 0x10);
+  // Another peek must not consume the routed direction's rising/falling edges.
+  c.r[4] = buffer;
+  c.r[5] = 1;
+  psp::hle(c, 1);
+  CHECK((gameplay(0x14) & 0xF0) == 0);
+  CHECK((gameplay(0x18) & 0xF0) == 0x10);
   c.r[2] = 0;
   psp::hle(c, 4);
 }
@@ -197,7 +327,8 @@ void testFirmware() {
   psp::bind_tables(functions, 1, imports, 5);
   psp::controls_init(true);
   for (const char* invalid : {"", "x:0", "-1:0", "0:0:0", "0:0:1:128:0",
-                              "0:0:1:0:1junk", "0:0xZZ", "0:0:1:0", "0:0x40:10,invalid"}) {
+                              "0:0:1:0:1junk", "0:0xZZ", "0:0:1:0", "0:0x40:10,invalid",
+                              "0:0:1:0:0:128:0", "0:0:1:0:0:0", "0:0:1:0:0:0:1junk"}) {
     bool rejected = false;
     try { psp::k::display_set_gamepad_script(invalid); }
     catch (const std::invalid_argument&) { rejected = true; }
@@ -217,6 +348,8 @@ int main() {
   CHECK(psp::camera_directions(-32768, 32767) == 0x90);
   CHECK(psp::camera_directions(32767, -32768) == 0x60);
   testRouting();
+  testGamepadMapping();
+  testStickRoles();
   testNativeSelection();
   testFirmware();
   psp::free_memory();

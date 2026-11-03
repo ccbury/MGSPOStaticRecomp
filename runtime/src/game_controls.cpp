@@ -1,6 +1,8 @@
 #include <psp/game_controls.h>
 #include <psp/runtime.h>
+#include "platform.h"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace psp {
@@ -8,6 +10,7 @@ namespace {
 constexpr uint32_t kDirections = 0xF0;
 constexpr uint32_t kPad = 0x08A793DC;
 constexpr uint32_t kSettings = 0x089F51D0;
+constexpr uint32_t kGameState = 0x08A5CB64;
 constexpr uint32_t kEquipmentGuard = 0x08894C04;
 constexpr uint32_t kSelectDirection = 0x0889742C;
 
@@ -23,6 +26,7 @@ struct Buttons {
 bool g_modern = false, g_trace = false;
 uint32_t g_dpad = 0, g_camera = 0, g_other = 0;
 bool g_active = false;
+uint32_t g_lastSticks = UINT32_MAX;
 uint32_t g_lastGameplayDirections[2] = {UINT32_MAX, UINT32_MAX};
 Buttons g_gameplay, g_equipment, g_physical;
 uint32_t g_pending = 0;
@@ -51,11 +55,65 @@ uint32_t camera_directions(int16_t x, int16_t y) {
   return directions;
 }
 
+uint32_t controls_gamepad_buttons(uint16_t b, uint8_t leftTrigger, uint8_t rightTrigger) {
+  uint32_t buttons = ((b & 0x0010) ? 0x8 : 0) | ((b & 0x0020) ? 0x1 : 0) |
+                     ((b & 0x0100) ? 0x100 : 0) | ((b & 0x1000) ? 0x4000 : 0) |
+                     ((b & 0x2000) ? 0x2000 : 0) | ((b & 0x4000) ? 0x8000 : 0) |
+                     ((b & 0x8000) ? 0x1000 : 0);
+  if (!g_modern) return buttons | ((b & 0x0200) ? 0x200 : 0);
+  // XINPUT_GAMEPAD_TRIGGER_THRESHOLD is 30; the two triggers are independent axes.
+  if (leftTrigger > 30) buttons |= 0x200;
+  if (rightTrigger > 30) buttons |= 0x8000;
+  if (b & 0x0200) buttons |= 0x2000;
+  return buttons;
+}
+
+void controls_route_sticks(plat::Pad& pad) {
+  if (!pad.gamepadActive) return;
+  bool aiming = false;
+  if (g_modern && (pad.buttons & 0x200)) {
+    // Match the native menu/restriction checks before exchanging firmware analog roles.
+    bool inhibited = (lhu(kPad + 0x1E) & 7) ||
+                     ((lw(kGameState + 0x18) | lw(kGameState + 0x1C)) & 0x3A000) ||
+                     ((lw(kGameState + 0x10) | lw(kGameState + 0x14)) & 0x80000000u) ||
+                     lw(kGameState + 0x3C);
+    aiming = !inhibited;
+  }
+  // Native first person aims with PSP analog and moves with PSP directions.
+  int16_t analogX = aiming ? pad.gamepadRx : pad.gamepadLx;
+  int16_t analogY = aiming ? pad.gamepadRy : pad.gamepadLy;
+  int16_t directionX = aiming ? pad.gamepadLx : pad.gamepadRx;
+  int16_t directionY = aiming ? pad.gamepadLy : pad.gamepadRy;
+  auto axis = [](int16_t value, int deadzone) {
+    return value > deadzone || value < -deadzone ? value / 258 : 0;
+  };
+  int deadzone = g_modern ? (aiming ? 8689 : 7849) : 7999;
+  pad.lx = static_cast<uint8_t>(std::clamp(int(pad.lx) + axis(analogX, deadzone), 0, 255));
+  pad.ly = static_cast<uint8_t>(std::clamp(int(pad.ly) - axis(analogY, deadzone), 0, 255));
+  if (aiming) {
+    // Keep the left stick's recommended deadzone when it supplies digital movement.
+    if (directionX > 7849) pad.cameraDirections |= 0x20;
+    if (directionX < -7849) pad.cameraDirections |= 0x80;
+    if (directionY > 7849) pad.cameraDirections |= 0x10;
+    if (directionY < -7849) pad.cameraDirections |= 0x40;
+  } else {
+    pad.cameraDirections |= camera_directions(directionX, directionY);
+  }
+  uint32_t trace = uint32_t(pad.lx) | (uint32_t(pad.ly) << 8) |
+                   (pad.cameraDirections << 16) | (aiming ? 0x80000000u : 0);
+  if (g_trace && trace != g_lastSticks) {
+    g_lastSticks = trace;
+    std::fprintf(stderr, "[controls] sticks first-person=%u analog=%u,%u directions=%02X\n",
+                 aiming ? 1u : 0u, pad.lx, pad.ly, pad.cameraDirections);
+  }
+}
+
 void controls_init(bool modern, bool trace) {
   g_modern = modern;
   g_trace = trace;
   g_dpad = g_camera = g_other = g_pending = 0;
   g_active = false;
+  g_lastSticks = UINT32_MAX;
   g_gameplay = g_equipment = g_physical = {};
   g_selecting = false;
   g_lastGameplayDirections[0] = g_lastGameplayDirections[1] = UINT32_MAX;

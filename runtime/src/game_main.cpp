@@ -36,7 +36,7 @@ static void usage(const char* prog) {
                "  --headless  no window or audio\n"
                "  --controls <modern|legacy>  modern gamepad camera/weapons (default) or original PSP mapping\n"
                "  --controls-trace  log native direct equipment selections\n"
-               "  --gamepad-press <script>  like --press, but gamepad PSP bits and right stick (up = negative Y)\n"
+               "  --gamepad-press <script>  time:PSP-mask[:hold[:rx:ry[:lx:ly]]] (up = negative Y)\n"
                "  --trace   log every import call\n"
                "  --report  write the list of imports that were called to a file\n"
                "  --ge-dump write every GE command that is executed to a file\n"

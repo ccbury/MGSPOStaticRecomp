@@ -16,6 +16,8 @@ bool quit_requested();
 struct Pad {
   uint32_t buttons = 0;
   uint8_t lx = 128, ly = 128;
+  // Raw XInput axes stay separate from keyboard analog until contextual routing.
+  int16_t gamepadLx = 0, gamepadLy = 0, gamepadRx = 0, gamepadRy = 0;
   uint32_t gamepadDirections = 0, cameraDirections = 0, otherDirections = 0;
   bool gamepadActive = false;
 };
