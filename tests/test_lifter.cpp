@@ -94,6 +94,27 @@ static void testEmit() {
   CHECK(b.find("c.r[2] = 0u + 0x00000007u;") != std::string::npos);
 }
 
+static void testPromptHooks() {
+  PrxImage img;
+  img.base = 0x0884C000;
+  img.mem.resize(0x500);
+  auto put = [&](uint32_t a, uint32_t w) { std::memcpy(&img.mem[a - img.base], &w, 4); };
+  for (auto signature : {std::pair<uint32_t, uint32_t>{0x0884C0F8, 0x27BDFFD0},
+                        {0x0884C330, 0x8E621C48}, {0x0884C334, 0x50500009},
+                        {0x0884C350, 0x02004021}, {0x0884C438, 0x8E621C48},
+                        {0x0884C43C, 0x1050FFC6}})
+    put(signature.first, signature.second);
+  Program p;
+  p.img = &img;
+  for (uint32_t a : {0x0884C330u, 0x0884C438u}) {
+    auto emitted = emitFunction(p, {a, a + 4});
+    CHECK(emitted.find("prompts_texture(c.r[17], c.r[16])") < emitted.find("psp::lw"));
+    CHECK(emitFunction(p, {a, a + 4}, nullptr, true).find("prompts_texture") == std::string::npos);
+  }
+  put(0x0884C0F8, 0);
+  CHECK(emitFunction(p, {0x0884C330, 0x0884C334}).find("prompts_texture") == std::string::npos);
+}
+
 static void testControlHooks() {
   PrxImage img;
   img.base = 0x08804000;
@@ -253,6 +274,7 @@ int main() {
   testMultiModule();
   testEmit();
   testControlHooks();
+  testPromptHooks();
   testOps();
   testMemory();
   testDispatch();

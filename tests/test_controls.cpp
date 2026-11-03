@@ -314,10 +314,64 @@ void firmwareDriver(psp::Cpu& c) {
   psp::hle(c, 4);
 }
 
+void testPrompts() {
+  constexpr uint32_t d = 0x08AB0000, h = d + 64, palette = h + 64, original = 0x08AC0000;
+  for (uint32_t a = d; a < palette + 64; a += 4) psp::sw(a, 0);
+  psp::sw(d, 0x10);
+  psp::sw(d + 4, 0xC850DF);
+  psp::sw(d + 8, 0xEB5398);
+  psp::sw(d + 12, 0x000C000C);
+  psp::sw(d + 20, h);
+  psp::sw(h, 0x40105020);
+  psp::sw(h + 4, 4);
+  psp::sw(h + 12, palette);
+  for (unsigned i = 0; i < 16; ++i) psp::sw(palette + i * 4, 0xFF202020);
+  psp::sw(palette, 0);
+  psp::sw(palette + 60, 0xFFFFFFFF);
+  psp::prompts_init(false);
+  CHECK(psp::prompts_texture(d, original) == original);
+  psp::prompts_init(true);
+  for (bool modernControls : {false, true}) {
+    psp::controls_init(modernControls);
+    uint32_t y = psp::prompts_texture(d, original);
+    CHECK(y != original);
+    CHECK(psp::prompts_texture(d, original) == y);
+    CHECK(psp::lw(d + 20) == h && psp::lw(h + 8) == 0);
+    for (unsigned row = 0; row < 16; ++row)
+      for (unsigned col = 0; col < 32; ++col) {
+        uint8_t packed = psp::lbu(y + row / 8 * 128 + row % 8 * 16 + col / 2);
+        CHECK(((packed >> (col % 2 * 4)) & 15) == (psp::prompts_pixel('Y', col, row) ? 15 : 0));
+      }
+    psp::sw(d + 4, 0xB450DB);
+    CHECK(psp::prompts_texture(d, original) != y);
+    psp::sw(d + 8, 0x295087);
+    CHECK(psp::prompts_texture(d, original) == original);
+    psp::sw(d + 8, 0xA6753D);
+    CHECK(psp::prompts_texture(d, original) != original);
+    psp::sw(d + 4, 0xF3DB22);
+    CHECK(psp::prompts_texture(d, original) == original);  // D-pad, not a face button.
+    psp::sw(d + 4, 0xC850DF);
+    psp::sw(d + 12, 0x00100010);
+    CHECK(psp::prompts_texture(d, original) == original);
+    psp::sw(d + 12, 0x000C000C);
+    psp::sw(d + 8, 0xEB5398);
+  }
+  CHECK(!psp::prompts_pixel('B', 5, 5));
+  CHECK(!psp::prompts_pixel('X', 12, 0));
+  psp::sw(palette + 60, 0xE7FFFFFF);
+  CHECK(psp::prompts_texture(d, original) != original);  // Native antialiased icons need not reach alpha255.
+  psp::sw(palette + 60, 0xFF000000);
+  CHECK(psp::prompts_texture(d, original) == original);
+  CHECK(psp::prompts_texture(0, original) == original);
+  psp::prompts_init(false);
+  CHECK(psp::prompts_texture(d, original) == original);
+}
+
 void testFirmware() {
   psp::KernelConfig cfg;
   cfg.headless = true;
   psp::kernel_init(cfg, 0x08900000, 0);
+  testPrompts();
   psp::register_all_hle();
   const psp::FuncEntry functions[] = {{0x08804000, firmwareDriver}};
   const psp::ImportEntry imports[] = {

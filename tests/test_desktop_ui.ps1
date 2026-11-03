@@ -68,9 +68,13 @@ try {
   Start-Ui
   Wait-Status 'Build needed'
   [void][DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 103), 0x14E, [IntPtr]1, [IntPtr]::Zero)
+  $originalIcons = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+  if ($originalIcons.ToInt32() -ne 0) { throw 'Original PSP icons must be the default.' }
+  [void][DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x14E, [IntPtr]1, [IntPtr]::Zero)
   Click 104
   Wait-Status 'Settings saved'
   if ((Get-Content -LiteralPath $config -Raw) -notmatch 'controls=legacy') { throw 'Profile was not persisted.' }
+  if ((Get-Content -LiteralPath $config -Raw) -notmatch 'prompts=modern') { throw 'Icon mode was not persisted.' }
   Click 107
   Wait-Status 'Error:.*standalone Git clone'
   if ([DesktopUi]::IsWindowEnabled([DesktopUi]::GetDlgItem($window, 108))) { throw 'Update should not be enabled after failed check.' }
@@ -90,6 +94,8 @@ try {
   Start-Ui
   $profile = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 103), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
   if ($profile.ToInt32() -ne 1) { throw 'Remembered profile did not reload.' }
+  $icons = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+  if ($icons.ToInt32() -ne 1) { throw 'Remembered icons did not reload.' }
   Close-Ui
   $updateTests = Join-Path (Split-Path $exe) 'mgspo-launcher-update-tests.exe'
   if (Test-Path -LiteralPath $updateTests) {
@@ -107,6 +113,8 @@ try {
     $p = Get-Process -Id $child.ProcessId
     $window = $p.MainWindowHandle
     if ($window -eq [IntPtr]::Zero) { throw 'Activated UI window not ready.' }
+    $icons = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($icons.ToInt32() -ne 1) { throw 'Activated UI lost icon preference.' }
     Close-Ui
     Remove-Item -LiteralPath $staged -Force
     Start-Ui

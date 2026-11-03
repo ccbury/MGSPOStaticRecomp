@@ -10,8 +10,8 @@
 namespace {
 constexpr UINT kLog = WM_APP + 1, kDone = WM_APP + 2;
 enum { Iso = 101, Browse, Controls, SaveSettings, Launch, Build, Check, Update, Cancel, Restart,
-       Status, Log, Revision };
-HWND g_window, g_iso, g_controls, g_status, g_log, g_revision;
+       Status, Log, Revision, Prompts };
+HWND g_window, g_iso, g_controls, g_prompts, g_status, g_log, g_revision;
 std::thread g_worker;
 bool g_busy = false, g_closing = false;
 Ctx g_context;
@@ -52,7 +52,7 @@ void appendLog(const wstring& text) {
 }
 
 void buttons() {
-  for (int id : {Iso, Browse, Controls, SaveSettings, Launch, Build, Check})
+  for (int id : {Iso, Browse, Controls, Prompts, SaveSettings, Launch, Build, Check})
     EnableWindow(GetDlgItem(g_window, id), !g_busy && g_restart.empty());
   EnableWindow(GetDlgItem(g_window, Update), !g_busy && g_restart.empty() && !g_update.available.empty());
   EnableWindow(GetDlgItem(g_window, Restart), !g_busy && !g_restart.empty());
@@ -64,12 +64,14 @@ void readSettings() {
   if (iso.find_first_of(L"\r\n") != wstring::npos) die(L"ISO path contains a newline.");
   g_context.opt.iso = iso;
   g_context.opt.controls = SendMessageW(g_controls, CB_GETCURSEL, 0, 0) == 1 ? "legacy" : "modern";
+  g_context.opt.prompts = SendMessageW(g_prompts, CB_GETCURSEL, 0, 0) == 1 ? "modern" : "original";
 }
 
 void persistSettings(Ctx& context) {
   context.config.load(context.config.file);
   context.config.set("iso", toUtf8(context.opt.iso));
   context.config.set("controls", context.opt.controls);
+  context.config.set("prompts", context.opt.prompts);
   context.config.set("work", toUtf8(context.work.wstring()));
   context.config.save();
 }
@@ -289,7 +291,14 @@ int desktopMain(int argc, wchar_t** argv, int show) {
   string controls = g_context.opt.controls.empty() ? g_context.config.get("controls") : g_context.opt.controls;
   if (!controls.empty() && controls != "modern" && controls != "legacy") die(L"Invalid controls setting in launcher.ini.");
   SendMessageW(g_controls, CB_SETCURSEL, controls == "legacy" ? 1 : 0, 0);
-  control(L"BUTTON", L"Save settings", WS_TABSTOP, SaveSettings, 350, 86, 120, 28);
+  control(L"STATIC", L"Icons", 0, 0, 350, 90, 45, 24);
+  g_prompts = control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, Prompts, 400, 86, 300, 100);
+  SendMessageW(g_prompts, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Original PSP"));
+  SendMessageW(g_prompts, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Modern Xbox-style (menu X/Y)"));
+  string prompts = g_context.opt.prompts.empty() ? g_context.config.get("prompts") : g_context.opt.prompts;
+  if (!prompts.empty() && prompts != "original" && prompts != "modern") die(L"Invalid prompts setting in launcher.ini.");
+  SendMessageW(g_prompts, CB_SETCURSEL, prompts == "modern" ? 1 : 0, 0);
+  control(L"BUTTON", L"Save settings", WS_TABSTOP, SaveSettings, 720, 86, 145, 28);
   control(L"STATIC", (L"Work / saves: " + g_context.work.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 126, 845, 23);
   control(L"STATIC", (L"Source: " + g_context.source.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 151, 845, 23);
   control(L"BUTTON", L"Launch game", WS_TABSTOP | BS_DEFPUSHBUTTON, Launch, 20, 188, 145, 35);

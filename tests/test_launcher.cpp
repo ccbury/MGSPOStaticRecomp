@@ -102,11 +102,21 @@ int wmain() {
     check(firstStamp != buildStamp(c), "build stamp must include source checkout");
     check(sourceRevision(c) == "unversioned", "source archives must remain supported for CLI builds");
     auto args = gameArguments(c);
-    check(args.back() == L"modern", "default control profile must be modern");
+    check(args[args.size() - 3] == L"modern", "default control profile must be modern");
+    check(args.back() == L"original", "default prompts must preserve original rendering");
     c.config.set("controls", "legacy");
-    check(gameArguments(c).back() == L"legacy", "remembered control profile must be used");
+    check(gameArguments(c)[args.size() - 3] == L"legacy", "remembered control profile must be used");
     c.opt.controls = "modern";
-    check(gameArguments(c).back() == L"modern", "explicit profile must override config");
+    check(gameArguments(c)[args.size() - 3] == L"modern", "explicit profile must override config");
+    c.config.set("prompts", "modern");
+    check(gameArguments(c).back() == L"modern", "remembered icon mode must be forwarded");
+    c.opt.prompts = "original";
+    check(gameArguments(c).back() == L"original", "explicit icons must override config");
+    c.opt.prompts = "bad";
+    bool invalidPrompts = false;
+    try { gameArguments(c); } catch (const Fatal&) { invalidPrompts = true; }
+    check(invalidPrompts, "invalid icons must fail explicitly");
+    c.opt.prompts.clear();
     c.opt.gameArgs = {L"--controls", L"legacy"};
     check(gameArguments(c).back() == L"legacy", "raw game arguments must remain compatible");
     c.opt.controls = "invalid";
@@ -118,7 +128,7 @@ int wmain() {
     c.config.save();
     Ini loaded;
     loaded.load(c.config.file);
-    check(loaded.get("controls") == "legacy" && loaded.get("custom") == "preserved",
+    check(loaded.get("controls") == "legacy" && loaded.get("prompts") == "modern" && loaded.get("custom") == "preserved",
           "settings must round trip with custom keys");
     HANDLE settings = CreateFileW(c.config.file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                   OPEN_EXISTING, 0, nullptr);
@@ -136,6 +146,11 @@ int wmain() {
     Options parsed;
     check(parse(6, command, parsed) && parsed.controls == "legacy" && parsed.configPath == a4 && parsed.iso == a5,
           "config/profile/ISO arguments must parse without losing spaces");
+    wchar_t p1[] = L"--prompts", p2[] = L"modern", p3[] = L"invalid";
+    wchar_t* promptCommand[] = {a0, p1, p2};
+    check(parse(3, promptCommand, parsed) && parsed.prompts == "modern", "icon mode must parse");
+    promptCommand[2] = p3;
+    check(!parse(3, promptCommand, parsed), "invalid icon option must be rejected");
     if (GetEnvironmentVariableW(L"MGSPO_TEST_TOOLCHAIN", nullptr, 0) > 0) {
       setupToolchain();
       check(haveX64Toolchain(), "toolchain setup must select x64");
