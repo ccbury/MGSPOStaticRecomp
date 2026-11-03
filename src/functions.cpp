@@ -167,6 +167,39 @@ Program discover(const PrxImage& img, uint32_t importBase) {
   }
   // A switch case can only be reached from inside the function that holds the dispatching jr. When
   // the function was split so that a case ended up in a piece without one, it has to be an entry point.
+  // The jr that uses a table is found by the constant it loads just before (lui + addiu); a case
+  // is only reachable when its piece holds a jr of its own table, not just any computed jump.
+  std::map<uint32_t, std::set<size_t>> jrTables;
+  for (const auto& r : img.code) {
+    for (uint32_t a = r.start; a + 4 <= r.end; a += 4) {
+      uint32_t w = img.word(a);
+      if (!((w >> 26) == 0 && (w & 0x3F) == 8 && ((w >> 21) & 31) != 31)) continue;
+      uint32_t lo = a > r.start + 96 ? a - 96 : r.start;
+      uint32_t hiVal[32] = {};
+      bool hasHi[32] = {};
+      for (uint32_t p = lo; p < a; p += 4) {
+        uint32_t x = img.word(p);
+        uint32_t op = x >> 26, rs = (x >> 21) & 31, rt = (x >> 16) & 31;
+        uint32_t cand = 0;
+        bool have = false;
+        if (op == 0x0F) {
+          hiVal[rt] = (x & 0xFFFF) << 16;
+          hasHi[rt] = true;
+        } else if ((op == 0x09 || op == 0x0D) && hasHi[rs]) {
+          cand = hiVal[rs] + (op == 0x09 ? static_cast<uint32_t>(static_cast<int16_t>(x & 0xFFFF)) : (x & 0xFFFF));
+          have = true;
+        }
+        if (have) {
+          for (size_t k = 0; k < img.jumpTables.size(); ++k)
+            if (cand >= img.jumpTables[k].start && cand < img.jumpTables[k].end) jrTables[a].insert(k);
+        }
+      }
+    }
+  }
+  std::map<uint32_t, std::vector<size_t>> targetTables;
+  for (size_t k = 0; k < img.jumpTables.size(); ++k)
+    for (uint32_t t : img.jumpTables[k].targets) targetTables[t].push_back(k);
+
   for (bool changed = true; changed;) {
     changed = false;
     for (uint32_t t : img.jumpTargets) {
@@ -177,7 +210,14 @@ Program discover(const PrxImage& img, uint32_t importBase) {
       bool dispatch = false;
       for (uint32_t a = lo; a < hi && !dispatch; a += 4) {
         uint32_t w = img.word(a);
-        dispatch = (w >> 26) == 0 && (w & 0x3F) == 8 && ((w >> 21) & 31) != 31;
+        if (!((w >> 26) == 0 && (w & 0x3F) == 8 && ((w >> 21) & 31) != 31)) continue;
+        auto jt = jrTables.find(a);
+        if (jt == jrTables.end()) {
+          dispatch = true;
+          continue;
+        }
+        for (size_t k : targetTables[t])
+          if (jt->second.count(k)) dispatch = true;
       }
       if (!dispatch) {
         roots.insert(t);
