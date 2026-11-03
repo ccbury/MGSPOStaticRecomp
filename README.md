@@ -26,8 +26,46 @@ binary is in [docs/eboot-notes.md](docs/eboot-notes.md).
 
 ## Quick start (Windows)
 
-You need your own legally obtained disc image (plain `.iso`), Visual Studio 2022 (or Build Tools)
-with the C++ workload and CMake 3.16+. Run everything from an "x64 Native Tools Command Prompt".
+You need your own legally obtained disc image of the US release (`ULUS10202`, plain `.iso`) and
+Visual Studio 2022 or Build Tools with the "Desktop development with C++" workload (this also
+brings CMake and Ninja). About 6 GB of free disk space is needed for the work directory.
+
+Build the tools once, then let the launcher do the rest:
+
+```
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target mgspo-launcher
+build\mgspo-launcher run "D:\games\Portable Ops.iso"
+```
+
+(run these from an "x64 Native Tools Command Prompt", or any prompt that already has CMake and
+Ninja; the launcher itself finds Visual Studio through `vswhere` and sets up the compiler
+environment.) `play.bat` is a double-clickable wrapper around it; with no ISO known it opens a file
+picker.
+
+The first run checks the disc id, extracts the disc, lifts the main module, helper modules and the
+default stage list, builds `mgspo-game` and starts it. The ISO path is remembered in
+`%LOCALAPPDATA%\MGSPO\launcher.ini`, and every step is cached, so later runs start the game
+straight away. If the game loads a stage that was not lifted, the launcher spots the `not lifted`
+line in the game log, adds the stage, re-lifts, rebuilds and restarts.
+
+```
+mgspo-launcher [run] [iso]     set up what is missing, then play (default)
+mgspo-launcher setup           extract, lift and build only
+mgspo-launcher rebuild         redo lift and build from scratch
+mgspo-launcher clean [--saves] [--all]   remove generated files (keeps saves unless asked)
+mgspo-launcher status          show what is cached
+  --work <dir>   work directory, default %LOCALAPPDATA%\MGSPO\work
+  --no-relaunch  do not rebuild and restart when another stage is needed
+  -- <args>      passed to mgspo-game, e.g.  -- --headless --timeout 60
+```
+
+All output (extracted files, generated C++, build, saves, logs) lives in the work directory,
+outside the repository. It contains material derived from the game, so never commit or share it.
+
+### Advanced: doing it by hand
+
+Run everything from an "x64 Native Tools Command Prompt". This is what the launcher automates.
 
 ```
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release

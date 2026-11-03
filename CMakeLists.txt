@@ -36,6 +36,17 @@ target_link_libraries(mgspo-extract PRIVATE mgspo)
 add_executable(mgspo-lift tools/lift/main.cpp)
 target_link_libraries(mgspo-lift PRIVATE mgspo)
 
+# One-step setup and launcher (Windows only): extract, lift, build and run from an ISO.
+if(WIN32)
+  add_executable(mgspo-launcher tools/launcher/main.cpp)
+  target_compile_definitions(mgspo-launcher PRIVATE MGSPO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(mgspo-launcher PRIVATE comdlg32)
+  if(MINGW)
+    target_link_options(mgspo-launcher PRIVATE -municode)
+  endif()
+  add_dependencies(mgspo-launcher mgspo-extract mgspo-lift)
+endif()
+
 # Runtime that recompiled code links against.
 add_library(mgspo_rt STATIC
   runtime/src/memory.cpp
