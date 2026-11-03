@@ -34,7 +34,7 @@ Build the tools once, then let the launcher do the rest:
 
 ```
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target mgspo-launcher
+cmake --build build --target mgspo-launcher --parallel 1
 build\mgspo-launcher run "D:\games\Portable Ops.iso"
 ```
 
@@ -51,6 +51,8 @@ line in the game log, adds the stage, re-lifts, rebuilds and restarts.
 
 Moving to a different source checkout, or finding a cached x86 compiler, automatically resets the
 CMake configuration in the work directory before building. Extracted disc files and saves are kept.
+The launcher builds with one compiler job to bound memory use. Ninja also serializes compilation
+of `mgspo-game` sources, including when built manually; other targets can still build concurrently.
 
 ```
 mgspo-launcher [run] [iso]     set up what is missing, then play (default)
@@ -72,7 +74,7 @@ Run everything from an "x64 Native Tools Command Prompt". This is what the launc
 
 ```
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
+cmake --build build --parallel 1
 ctest --test-dir build
 
 :: pull the disc files out (read only use; nothing here goes into git)
@@ -90,7 +92,7 @@ build\mgspo-lift boot\boot.elf gen ^
 
 :: build the game around the lifted code (re-run configure after every re-lift)
 cmake -S . -B bgame -G Ninja -DCMAKE_BUILD_TYPE=Release -DMGSPO_GENERATED_DIR=%CD%/gen -DMGSPO_BUILD_TESTS=OFF
-cmake --build bgame
+cmake --build bgame --parallel 1
 
 :: run
 bgame\mgspo-game boot\boot.elf --disc disc --iso "Portable Ops.iso" --save sav
@@ -116,7 +118,7 @@ Requires CMake 3.16+ and a C++17 compiler.
 
 ```
 cmake -S . -B build
-cmake --build build
+cmake --build build --parallel 1
 ctest --test-dir build
 ```
 

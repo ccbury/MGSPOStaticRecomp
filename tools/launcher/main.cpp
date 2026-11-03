@@ -619,7 +619,7 @@ void stepBuild(Ctx& c, bool force) {
                        L"-DCMAKE_CXX_COMPILER=" + searchExe(L"cl.exe")},
                       {}, log, nullptr);
   if (rc != 0) die(L"cmake configure failed, see " + log.wstring());
-  rc = runProcess(L"cmake.exe", {L"--build", c.build.wstring(), L"--target", L"mgspo-game"}, {}, log, nullptr);
+  rc = runProcess(L"cmake.exe", {L"--build", c.build.wstring(), L"--target", L"mgspo-game", L"--parallel", L"1"}, {}, log, nullptr);
   if (rc != 0) die(L"build failed, see " + log.wstring());
   if (!fs::exists(game)) die(L"build finished but " + game.wstring() + L" is missing");
   c.state.set("built", buildStamp(c));

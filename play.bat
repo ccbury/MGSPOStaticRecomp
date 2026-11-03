@@ -10,6 +10,6 @@ for %%D in ("%HERE%" "%HERE%build\" "%HERE%out\build\") do (
   )
 )
 echo mgspo-launcher.exe was not found. Build the project first:
-echo   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^&^& cmake --build build --target mgspo-launcher
+echo   cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^&^& cmake --build build --target mgspo-launcher --parallel 1
 pause
 exit /b 1
