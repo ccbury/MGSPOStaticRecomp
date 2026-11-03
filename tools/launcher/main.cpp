@@ -439,7 +439,44 @@ string liftStamp(const Ctx& c) {
   return isoId(c) + "|" + joinList(stageList(c)) + "|" + fileStamp(toolExe(c, L"mgspo-lift.exe"));
 }
 
-string buildStamp(const Ctx& c) { return liftStamp(c) + "|" + fileStamp(exePath()); }
+string buildStamp(const Ctx& c) {
+  return liftStamp(c) + "|" + fileStamp(exePath()) + "|" + toUtf8(c.source.wstring());
+}
+
+bool buildCacheMatches(const Ctx& c) {
+  fs::path file = c.build / L"CMakeCache.txt";
+  if (!fs::exists(file)) return false;
+  std::ifstream in(file, std::ios::binary);
+  if (!in) die(L"cannot read " + file.wstring());
+  std::map<string, string> entries;
+  string line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    auto eq = line.find('=');
+    if (eq != string::npos) entries[line.substr(0, eq)] = line.substr(eq + 1);
+  }
+  if (in.bad()) die(L"error reading " + file.wstring());
+  auto sameDirectory = [&](const char* key, const fs::path& expected) {
+    auto it = entries.find(key);
+    if (it == entries.end() || it->second.empty() || expected.empty()) return false;
+    std::error_code ec;
+    return fs::equivalent(fs::path(toWide(it->second)), expected, ec) && !ec;
+  };
+  // equivalent() also recognises the 8.3 paths used by the launcher.
+  return sameDirectory("CMAKE_HOME_DIRECTORY:INTERNAL", c.source) &&
+         sameDirectory("CMAKE_CACHEFILE_DIR:INTERNAL", c.build) &&
+         entries["CMAKE_GENERATOR:INTERNAL"] == "Ninja";
+}
+
+void resetBuildCache(const Ctx& c) {
+  // Keep compiled objects, extracted files, generated sources and saves.
+  for (const auto& name : {L"CMakeCache.txt", L"CMakeFiles"}) {
+    fs::path path = c.build / name;
+    std::error_code ec;
+    fs::remove_all(path, ec);
+    if (ec) die(L"cannot reset " + path.wstring() + L": " + toWide(ec.message()));
+  }
+}
 
 void validateIso(Ctx& c) {
   say(L"[1/4] Checking the disc image");
@@ -528,12 +565,18 @@ void stepLift(Ctx& c, bool force) {
 
 void stepBuild(Ctx& c, bool force) {
   fs::path game = c.build / L"mgspo-game.exe";
-  if (!force && c.state.get("built") == buildStamp(c) && fs::exists(game))
+  bool cacheMatches = buildCacheMatches(c);
+  if (!force && cacheMatches && c.state.get("built") == buildStamp(c) && fs::exists(game))
     return say(L"[4/4] Game executable is up to date (cached)");
   say(L"[4/4] Building the game (the first build compiles a lot of generated code and can take a long while)");
   c.state.erase("built");
   c.state.save();
   setupToolchain();
+  if (!cacheMatches) {
+    if (fs::exists(c.build / L"CMakeCache.txt"))
+      say(L"  Source checkout or build directory changed; resetting CMake configuration (saves are kept).");
+    resetBuildCache(c);
+  }
   fs::path log = c.logs / L"build.log";
   std::error_code ec;
   fs::remove(log, ec);
@@ -691,7 +734,7 @@ int cmdStatus(Ctx& c) {
     c.iso = fs::path(toWide(iso));
     say(L"extracted: " + wstring(c.state.get("extracted") == isoId(c) ? L"yes" : L"no"));
     say(L"lifted   : " + wstring(c.state.get("lifted") == liftStamp(c) ? L"yes" : L"no"));
-    say(L"built    : " + wstring(c.state.get("built") == buildStamp(c) ? L"yes" : L"no"));
+    say(L"built    : " + wstring(buildCacheMatches(c) && c.state.get("built") == buildStamp(c) ? L"yes" : L"no"));
   }
   string extra = c.state.get("extra_stages");
   if (!extra.empty()) say(L"extra stages: " + toWide(extra));
