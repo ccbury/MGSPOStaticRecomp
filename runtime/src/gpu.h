@@ -54,6 +54,8 @@ struct Stats {
   uint64_t blendedDraws = 0;
   uint64_t skinnedDraws = 0;
   uint64_t clutLoads = 0;
+  uint64_t catNs[4] = {};  // raster time: clear, flat, textured, textured+blended
+  uint64_t fragments = 0;
   std::map<uint32_t, uint64_t> vertexTypes;
   std::map<uint32_t, uint64_t> texFormats;  // key: format | swizzle << 8
   std::map<uint32_t, uint64_t> fbFormats;

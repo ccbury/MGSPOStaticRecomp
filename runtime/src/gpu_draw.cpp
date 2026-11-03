@@ -1,5 +1,6 @@
 // GE vertex decoding, transform & lighting, primitive assembly and the software rasteriser.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
@@ -376,6 +377,10 @@ struct Raster {
     }
     texOn = !clear && (r[0x1E] & 1);
     if (texOn) texOn = setup_texture();
+    if (texOn) build_palette();
+    keepReady = false;
+    keepCache = keep_mask();
+    keepReady = true;
     return true;
   }
 
@@ -408,7 +413,24 @@ struct Raster {
 
   // ---- texture fetch ----
 
+  uint32_t pal[256];
+  bool palReady = false;
+  uint32_t keepCache = 0;
+  bool keepReady = false;
+
   uint32_t clut_entry(uint32_t idx) const {
+    if (palReady) return pal[idx & 255];
+    return clut_slow(idx);
+  }
+
+  void build_palette() {
+    if (tFmt != 4 && tFmt != 5) return;
+    const int n = tFmt == 4 ? 16 : 256;
+    for (int i = 0; i < n; ++i) pal[i] = clut_slow(i);
+    palReady = true;
+  }
+
+  uint32_t clut_slow(uint32_t idx) const {
     idx = ((idx >> cShift) & cMask) + cStart;
     if (cFmt == 3) return g.clut_[idx & 1023] ;
     uint16_t v;
@@ -546,12 +568,14 @@ struct Raster {
   // ---- fragment pipeline ----
 
   uint32_t keep_mask() const {
+    if (keepReady) return keepCache;
     uint32_t m = (r[0xE8] & 0xFFFFFF) | ((r[0xE9] & 0xFF) << 24);
     return fbBpp == 4 ? m : pack_px(fbFmt, m);
   }
 
   void fragment(int x, int y, float z, const float* col, const float* spec, float fog, float u, float v) {
     if (x < sx1 || x > sx2 || y < sy1 || y > sy2) return;
+    if (st) st->fragments++;
     int c[4];
     for (int i = 0; i < 4; ++i) c[i] = clampi(static_cast<int>(col[i] * 255.0f + 0.5f), 0, 255);
 
@@ -782,9 +806,31 @@ struct Raster {
     int maxY = std::min(sy2, static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}))));
     const bool tl0 = top_left(b, c), tl1 = top_left(c, a), tl2 = top_left(a, b);
     const float invArea = 1.0f / area;
+    const bool plainCol = flat || (a.col[0] == b.col[0] && a.col[1] == b.col[1] && a.col[2] == b.col[2] && a.col[3] == b.col[3] &&
+                                   b.col[0] == c.col[0] && b.col[1] == c.col[1] && b.col[2] == c.col[2] && b.col[3] == c.col[3]);
+    const bool needSpec = secondarySpec && lighting;
+    const bool clipZ = clipOn && !through;
+    const float zlo = static_cast<float>(r[0xD6] & 0xFFFF), zhi = static_cast<float>(r[0xD7] & 0xFFFF);
     for (int y = minY; y <= maxY; ++y) {
-      for (int x = minX; x <= maxX; ++x) {
-        float px = x + 0.5f, py = y + 0.5f;
+      const float py = y + 0.5f;
+      int xs = minX, xe = maxX;
+      {
+        // narrow the scan to where the three edge functions can be non-negative
+        const SV* ea[3] = {&b, &c, &a};
+        const SV* eb[3] = {&c, &a, &b};
+        float lo = static_cast<float>(minX), hi = static_cast<float>(maxX);
+        for (int k = 0; k < 3; ++k) {
+          float slope = -(eb[k]->y - ea[k]->y);  // d(edge)/dx
+          float base = edge(*ea[k], *eb[k], 0.5f, py);
+          if (slope > 0) lo = std::max(lo, std::floor(-base / slope) - 1.0f);
+          else if (slope < 0) hi = std::min(hi, std::ceil(-base / slope) + 1.0f);
+          else if (base < 0) { lo = 1; hi = 0; }
+        }
+        xs = static_cast<int>(lo);
+        xe = static_cast<int>(hi);
+      }
+      for (int x = xs; x <= xe; ++x) {
+        const float px = x + 0.5f;
         float w0 = edge(b, c, px, py), w1 = edge(c, a, px, py), w2 = edge(a, b, px, py);
         if (w0 < 0 || w1 < 0 || w2 < 0) continue;
         if ((w0 == 0 && !tl0) || (w1 == 0 && !tl1) || (w2 == 0 && !tl2)) continue;
@@ -792,12 +838,16 @@ struct Raster {
         w1 *= invArea;
         w2 *= invArea;
         float z = a.z * w0 + b.z * w1 + c.z * w2;
-        if (clipOn && !through && (z < static_cast<float>(r[0xD6] & 0xFFFF) || z > static_cast<float>(r[0xD7] & 0xFFFF)))
-          continue;
-        float col[4], spec[3];
-        for (int i = 0; i < 4; ++i) col[i] = a.col[i] * w0 + b.col[i] * w1 + c.col[i] * w2;
-        for (int i = 0; i < 3; ++i) spec[i] = a.spec[i] * w0 + b.spec[i] * w1 + c.spec[i] * w2;
-        float fog = a.fog * w0 + b.fog * w1 + c.fog * w2;
+        if (clipZ && (z < zlo || z > zhi)) continue;
+        float col[4], spec[3] = {0, 0, 0};
+        if (plainCol) {
+          for (int i = 0; i < 4; ++i) col[i] = a.col[i];
+        } else {
+          for (int i = 0; i < 4; ++i) col[i] = a.col[i] * w0 + b.col[i] * w1 + c.col[i] * w2;
+        }
+        if (needSpec)
+          for (int i = 0; i < 3; ++i) spec[i] = a.spec[i] * w0 + b.spec[i] * w1 + c.spec[i] * w2;
+        float fog = fogOn ? a.fog * w0 + b.fog * w1 + c.fog * w2 : 0.0f;
         float u = 0, v = 0;
         if (texOn) {
           float pw0 = w0 * a.invw, pw1 = w1 * b.invw, pw2 = w2 * c.invw;
@@ -1209,7 +1259,12 @@ void Gpu::draw_prim(uint32_t arg) {
   } catch (const std::runtime_error&) {
     return;  // vertex data outside of emulated memory
   }
+  auto t0 = std::chrono::steady_clock::now();
   R.assemble(vt, verts, prim);
+  if (stats_) {
+    int cat = (r_[0xD3] & 1) ? 0 : (R.texOn ? (R.blendOn ? 3 : 2) : 1);
+    stats_->catNs[cat] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+  }
 }
 
 // ---- patches ----

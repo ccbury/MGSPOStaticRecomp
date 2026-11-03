@@ -17,7 +17,9 @@ Nothing here ships any game code or data. See [docs/legal.md](docs/legal.md).
 Work in progress. The main module, the helper libraries and a chosen set of stage modules are
 lifted to C++ and run against the runtime. The game boots, loads its stage modules from the disc,
 streams and inflates their data and issues GE command lists. The intro movie plays (see
-[docs/movies.md](docs/movies.md)) and the game reaches its title screen. Current blockers are in
+[docs/movies.md](docs/movies.md)), the game goes through the title, name entry and opening
+cutscene, and then reaches the first stage (the prison cell, with HUD and radar) where Snake
+can be moved. Performance there is well below real time; see the profiling notes in
 [docs/boot-progress.md](docs/boot-progress.md); background on the
 binary is in [docs/eboot-notes.md](docs/eboot-notes.md).
 
@@ -41,7 +43,8 @@ build\mgspo-lift boot\boot.elf gen ^
     --helper %U%\modules\zlibdec.prx --helper %U%\modules\kjfs.prx --helper %U%\modules\sound2.prx ^
     --stage %U%\stage\init\init.prx --stage %U%\stage\r_main01\r_main01.prx ^
     --stage %U%\stage\r_main02\r_main02.prx --stage %U%\stage\r_net01\r_net01.prx ^
-    --stage %U%\stage\gsmenu\gsmenu.prx --stage %U%\stage\title\title.prx
+    --stage %U%\stage\gsmenu\gsmenu.prx --stage %U%\stage\title\title.prx ^
+    --stage %U%\stage\flashdemo\flashdemo.prx --stage %U%\stage\st04vo\st04vo.prx
 
 :: build the game around the lifted code (re-run configure after every re-lift)
 cmake -S . -B bgame -G Ninja -DCMAKE_BUILD_TYPE=Release -DMGSPO_GENERATED_DIR=%CD%/gen -DMGSPO_BUILD_TESTS=OFF

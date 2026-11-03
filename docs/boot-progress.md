@@ -184,3 +184,32 @@ Keyboard and XInput mapping in `platform_win32.cpp` was re-read and is complete 
 ### Performance
 
 Headless, the software GE plus the movie decoder run at roughly 20-25 fps in the movie scenes (game time falls behind wall time). Ideas, roughly in order of payoff: split the rasteriser into screen tiles and fill them on worker threads; use SIMD (SSE2/AVX2) for flat and Gouraud triangle spans; cache decoded textures (swizzle and CLUT lookups) per texture address and mark them dirty on writes; skip the full-screen clears that are overwritten by a full-screen sprite; decode the movie on its own thread instead of inside `sceMpegAvcDecode`.
+
+## First stage
+
+Starting from the cutscene, `st04vo` (the prison stage, 1,099,556 bytes) is the next module to be loaded, so it has to be lifted too (`--stage ...\stage\st04vo\st04vo.prx`). With `--auto-press 0x2008` (Start+Circle) a run goes logo, title, name entry, cutscene, and reaches the cell around the 60 s mark with no fault over a 240 s run. Start in game opens the pause menu, so scripted tests should use `--press time:mask[:hold[:lx:ly]]` instead (times and holds in game seconds, stick values -128..127). Scripted stick input turns and walks Snake.
+
+### Lifter fix: jump tables
+
+The first fault in the stage was `call to unrecompiled address 0x088E6D14`, a case of a switch reached through the table at 0x089EC4C4. Two things were wrong in the lifter:
+
+- Table detection discarded a whole run of code pointers when the run spanned 0x2000 bytes or more, which happens when a table sits right next to other pointer arrays. Runs are now cut where the target window exceeds 0x2000 and each table is recorded (`PrxImage::jumpTables`).
+- A case body was treated as reachable if any computed `jr` followed it, even one that belongs to another table. Each non-`ra` `jr` is now tied to the table whose address it builds (lui + addiu/ori within 96 bytes before it); cases without a `jr` of their own table become function roots. A `jr` with no recognisable table keeps the old behaviour.
+
+### Profiling (`--profile`, `--ge-stats`)
+
+`--profile` prints a line every 5 s with flips/s, presents/s, skipped vblanks, time spent in GE list execution and in the present/convert step. `--ge-stats` now also reports raster time per draw class and the fragment count.
+
+In-game and pause menu scenes (this machine, one guest thread, Release build):
+
+- 7.5-15 flips/s, GE 290-770 ms per second of wall time (up to about 75%), present 0.45-0.8 ms per frame (negligible).
+- 100 s run: about 860 M fragments, 10.8 M triangles in 1260 lists, about 41 s in the rasteriser (clear 2.2 s, flat 8 s, textured 14.6 s, textured+blend 14.4 s), so roughly 45-50 ns per fragment and about 6-7 screens of overdraw per frame.
+- Tried: resolved palette per draw, cached keep mask, per-row span narrowing and skipping unused attribute interpolation in triangles. None of them moved the numbers measurably, so the cost is in the per-fragment pipeline (generic state checks, float to int conversions, blend factor switch) rather than coverage tests.
+
+Next steps for speed: a specialised fragment path for the common state combinations (through-mode sprites with CLUT8 textures, modulate/replace, simple alpha blend, no depth/stencil), then tile-based multithreaded fill. The lifted guest code was not the limit in these runs (GE plus present account for most of the wall time), but it has not been profiled separately.
+
+### Remaining blockers
+
+- Frame rate in game (see above).
+- In-game frames after the first scene look dark and blotchy; not yet diagnosed (fade, lighting or dither).
+- Movie frame decoding is handled elsewhere.
