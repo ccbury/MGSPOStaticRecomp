@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "video_convert.h"
 #include "video_decoder.h"
 
 // CLSID_CMSH264DecoderMFT
@@ -35,8 +36,6 @@ bool ensure_mf() {
   }
   return ok;
 }
-
-uint8_t clamp8(int v) { return static_cast<uint8_t>(v < 0 ? 0 : v > 255 ? 255 : v); }
 
 class MfH264Decoder : public VideoDecoder {
  public:
@@ -161,34 +160,20 @@ class MfH264Decoder : public VideoDecoder {
     BYTE* d = nullptr;
     DWORD len = 0;
     if (FAILED(mb->Lock(&d, nullptr, &len))) return false;
-    const int w = width_, h = height_, st = stride_;
-    const int alignedH = (h + 15) & ~15;
-    bool ok = static_cast<size_t>(st) * alignedH + static_cast<size_t>(st) * h / 2 <= len;
+    const int w = width_, h = height_;
+    const size_t st = static_cast<size_t>(stride_);
+    // The chroma plane starts after the padded luma plane; the padding differs between decoder
+    // versions, so work it out from the buffer size instead of assuming a 16 row alignment.
+    const size_t rows = st ? (static_cast<size_t>(len) * 2 / 3) / st : 0;
+    bool ok = rows >= static_cast<size_t>(h) && st >= static_cast<size_t>(w);
     if (ok) {
       out.width = w;
       out.height = h;
-      out.rgba.resize(static_cast<size_t>(w) * h * 4);
-      const uint8_t* yp = d;
-      const uint8_t* uv = d + static_cast<size_t>(st) * alignedH;
-      for (int y = 0; y < h; ++y) {
-        uint8_t* o = &out.rgba[static_cast<size_t>(y) * w * 4];
-        const uint8_t* yr = yp + static_cast<size_t>(y) * st;
-        const uint8_t* ur = uv + static_cast<size_t>(y / 2) * st;
-        for (int x = 0; x < w; ++x) {
-          int Y = yr[x] - 16, U = ur[x & ~1] - 128, V = ur[(x & ~1) + 1] - 128;
-          int c = 298 * Y;
-          o[0] = clamp8((c + 409 * V + 128) >> 8);
-          o[1] = clamp8((c - 100 * U - 208 * V + 128) >> 8);
-          o[2] = clamp8((c + 516 * U + 128) >> 8);
-          o[3] = 255;
-          o += 4;
-        }
-      }
+      nv12_to_rgba(d, st, d + st * rows, st, w, h, out.rgba);
     }
     mb->Unlock();
     return ok;
   }
-
   ComPtr<IMFTransform> mft_;
   int width_, height_;
   int stride_ = 0;

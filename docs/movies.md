@@ -29,6 +29,16 @@ created the game still runs and the movie is black. Other platforms build
 `video_decoder_null.cpp`, which never produces a picture. Swapping in FFmpeg/libav later only means
 implementing `mpeg::VideoDecoder`.
 
+## Checking the picture
+
+On current main the movies decode cleanly: the intro movie shows correctly in-game (`--dump-frame`), and
+the other PSMFs on the disc (`s01_01`, `s14_04`, `oce_tel`) decode one picture per access unit when
+run through the demuxer and decoder outside the game. The `MF_MT_DEFAULT_STRIDE` of 480 is the plain
+width and the output buffer is exactly `w*h*3/2`. The 16-pixel colour bands seen earlier came from the
+stage's own texture handling, not the AVC decode. The NV12 to RGBA step lives in `video_convert.h` (unit
+tested), and the chroma plane offset is derived from the buffer size rather than assuming a 16 row
+alignment, so decoders that pad the luma plane still convert correctly.
+
 ## Not done
 
 - Movie audio is decoded with the ATRAC3+ decoder (see [audio.md](audio.md)); only stereo/mono streams.
