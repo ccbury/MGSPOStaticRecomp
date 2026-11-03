@@ -176,7 +176,7 @@ The null-object fault after the movie (flash VM at 0x0884158C calling a handler 
 
 With that in, a 150 s run goes through the opening cutscene with subtitles and then loads a string of stage overlays (all already lifted) without faulting. Remaining issues seen in that run:
 
-- Movie frames are wrong: the picture is a handful of flat vertical colour bands (roughly 16-pixel-wide strips) with the subtitles drawn correctly on top. The AVC decode in `mpeg.cpp` is only producing partial output, so that is the next thing to look at.
+- Movie frames: the AVC decode path was re-checked and is fine (see movies.md); any remaining banding on movie scenes is downstream of sceMpegAvcDecode.
 - The run ends on `Main` still running with the sound threads waiting; I have not yet got to a playable stage.
 
 Keyboard and XInput mapping in `platform_win32.cpp` was re-read and is complete (arrows/IJKL, Z/X/A/S, Enter/RShift, Q/E; XInput buttons, triggers/shoulders and left stick with a deadzone).

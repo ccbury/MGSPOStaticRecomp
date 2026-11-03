@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "mpeg_demux.h"
+#include "video_convert.h"
 
 using namespace psp::mpeg;
 
@@ -144,12 +145,34 @@ static void test_leading_psmf_header() {
   CHECK(d.pop_video(a) && a.pts == 500);
 }
 
+static void test_nv12_convert() {
+  // 4x2 picture, rows padded to a pitch of 8; the padding holds junk that must not leak in.
+  const int w = 4, h = 2;
+  Bytes y(8 * h, 0xEE), uv(8, 0xEE);
+  for (int r = 0; r < h; ++r)
+    for (int x = 0; x < w; ++x) y[r * 8 + x] = x < 2 ? 16 : 235;
+  uv[0] = 128; uv[1] = 128; uv[2] = 128; uv[3] = 128;
+  std::vector<uint8_t> out;
+  nv12_to_rgba(y.data(), 8, uv.data(), 8, w, h, out);
+  CHECK(out.size() == static_cast<size_t>(w * h * 4));
+  CHECK(out[0] == 0 && out[1] == 0 && out[2] == 0 && out[3] == 255);
+  CHECK(out[3 * 4] == 255 && out[3 * 4 + 1] == 255 && out[3 * 4 + 2] == 255);
+  CHECK(out[(w + 3) * 4] == 255);
+
+  // Strong red chroma (V high, U low) on the second chroma pair only.
+  uv[2] = 90; uv[3] = 240;
+  nv12_to_rgba(y.data(), 8, uv.data(), 8, w, h, out);
+  CHECK(out[0] == 0 && out[2] == 0);
+  CHECK(out[2 * 4] > out[2 * 4 + 1] && out[2 * 4] > out[2 * 4 + 2]);
+}
+
 int main() {
   test_header();
   test_video_split();
   test_split_feed();
   test_audio();
   test_leading_psmf_header();
+  test_nv12_convert();
   if (g_failures) {
     std::printf("%d failure(s)\n", g_failures);
     return 1;
