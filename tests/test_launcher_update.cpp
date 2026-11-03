@@ -94,6 +94,7 @@ int wmain(int argc, wchar_t** argv) {
 #ifdef FAIL_GAME
   return 9;
 #else
+  if (argc < 2 || std::wstring(argv[1]) != L"build") return 7;
   bool modernPrompts = false;
   for (int i=1;i+1<argc;++i)
     if (std::wstring(argv[i]) == L"--prompts") modernPrompts = std::wstring(argv[i+1]) == L"modern";
@@ -203,6 +204,8 @@ int wmain(int argc, wchar_t** argv) {
     stale.exeDir = fixture.root;
     gitOutput(seed, {L"clone", remote.wstring(), stale.source.wstring()});
     write(fixture.root / L"mgspo-lift.exe", "");
+    stale.disc = c.work / L"disc";
+    write(stale.disc / L"PSP_GAME" / L"USRDIR" / L"stage" / L"init.prx", "\x7F" "ELF-init");
     string before = buildStamp(stale);
     write(stale.source / L"revision.txt", "new source revision");
     commit(stale.source);

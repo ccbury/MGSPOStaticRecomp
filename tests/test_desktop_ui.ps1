@@ -67,6 +67,7 @@ function Close-Ui {
 try {
   Start-Ui
   Wait-Status 'Build needed'
+  Wait-Status 'includes all stages'
   [void][DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 103), 0x14E, [IntPtr]1, [IntPtr]::Zero)
   $originalIcons = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
   if ($originalIcons.ToInt32() -ne 0) { throw 'Original PSP icons must be the default.' }

@@ -97,6 +97,27 @@ int wmain() {
     writeCache(c, c.source, c.build);
     check(buildCacheMatches(c), "reconfigured cache should be reusable");
     writeText(c.exeDir / L"mgspo-lift.exe", "");
+    fs::path stages = c.disc / L"PSP_GAME" / L"USRDIR" / L"stage";
+    fs::create_directories(stages / L"nested");
+    writeText(stages / L"nested" / L"extra.prx", "\x7F" "ELF-extra");
+    writeText(stages / L"init.prx", "\x7F" "ELF-init");
+    c.state.set("extra_stages", "removed/removed.prx");
+    check(stageList(c).size() == 2, "default must include every nested disc stage, ignoring obsolete partial lists");
+    const string inventory = mgspo::stages::manifest(stageList(c));
+    check(!liftOutputsMatch(c, inventory), "old partial lift without completed inventory must be invalidated");
+    writeText(c.gen / L"tables.h", "header");
+    writeText(c.gen / L"tables.cpp", "table");
+    writeText(c.gen / L"stages.manifest", inventory);
+    check(liftOutputsMatch(c, inventory), "complete inventory must validate generated outputs");
+    const string allStamp = liftStamp(c);
+    check(allStamp.find("all-stages-v1:") != string::npos, "partial policy must not share all-stage cache stamp");
+    writeText(stages / L"new.prx", "\x7F" "ELF-new");
+    check(liftStamp(c) != allStamp && !liftOutputsMatch(c, mgspo::stages::manifest(stageList(c))),
+          "added stage must invalidate stamp and completed manifest");
+    fs::remove(stages / L"new.prx");
+    fs::remove(c.gen / L"tables.cpp");
+    check(!liftOutputsMatch(c, inventory), "missing generated table must invalidate completed lift");
+    writeText(c.gen / L"tables.cpp", "table");
     string firstStamp = buildStamp(c);
     c.source = otherSource;
     check(firstStamp != buildStamp(c), "build stamp must include source checkout");

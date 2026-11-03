@@ -20,6 +20,7 @@ namespace fs = std::filesystem;
 #include "prx.h"
 #include "zar.h"
 #include "vfpu.h"
+#include "../stage_inventory.h"
 
 using namespace mgspo;
 
@@ -106,19 +107,7 @@ int main(int argc, char** argv) {
       }
       else if (a == "--stage" && i + 1 < argc) stages.push_back(argv[++i]);
       else if (a == "--stage-dir" && i + 1 < argc) {
-        // every plain PRX below the folder (stage/<name>/<name>.prx on the disc)
-        std::vector<std::string> found;
-        for (const auto& e : fs::recursive_directory_iterator(argv[++i])) {
-          if (!e.is_regular_file()) continue;
-          std::string ext = e.path().extension().string();
-          for (char& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-          if (ext != ".prx") continue;
-          std::vector<uint8_t> head = readFile(e.path().string());
-          if (head.size() < 4 || head[0] != 0x7F || head[1] != 'E' || head[2] != 'L' || head[3] != 'F') continue;
-          found.push_back(e.path().string());
-        }
-        std::sort(found.begin(), found.end());
-        stages.insert(stages.end(), found.begin(), found.end());
+        for (const auto& path : mgspo::stages::enumerate(argv[++i])) stages.push_back(path.string());
       }
       else if (a == "--vfpu") vfpuHist = true;
       else if (a == "--disasm" && i + 2 < argc) {
@@ -132,6 +121,12 @@ int main(int argc, char** argv) {
       }
     }
 
+    std::vector<fs::path> stagePaths;
+    for (const auto& path : stages) stagePaths.emplace_back(path);
+    stagePaths = mgspo::stages::normalize(std::move(stagePaths));
+    stages.clear();
+    for (const auto& path : stagePaths) stages.push_back(path.string());
+    const std::string stageManifest = mgspo::stages::manifest(stagePaths);
     PrxImage img = loadPrx(readFile(in), base);
     if (vfpuHist) {
       printVfpuHistogram(img);
@@ -154,6 +149,8 @@ int main(int argc, char** argv) {
       for (const auto& s : img.info.segments)
         if (s.type == 1) segBases.push_back(img.base + s.vaddr);
       std::set<uint32_t> seen;
+      std::printf("validating and linking %zu stage modules\n", stages.size());
+      std::fflush(stdout);
       for (const auto& path : stages) {
         fs::path zarPath = fs::path(path).parent_path() / "_zar";
         if (!fs::exists(zarPath)) continue;
@@ -177,6 +174,8 @@ int main(int argc, char** argv) {
     EmitOptions opts;
     opts.outDir = out;
     opts.funcsPerFile = perFile;
+    fs::create_directories(out);
+    fs::remove(fs::path(out) / "stages.manifest");
 
     // Helper modules go right after the main image, each on its own page boundary, so the runtime can
     // reserve them up front and the generated code can use absolute addresses.
@@ -243,7 +242,10 @@ int main(int argc, char** argv) {
       uint32_t smallBase = next;
       uint32_t bigBase = (smallBase + ((smallMax + 0xFFF) & ~0xFFFu) + 0xFFF) & ~0xFFFu;
       std::map<std::pair<std::string, uint32_t>, uint32_t> interned;
+      size_t stageIndex = 0;
       for (const auto& it : items) {
+        std::printf("lifting stage %zu/%zu: %s\n", ++stageIndex, items.size(), it.path.c_str());
+        std::fflush(stdout);
         uint32_t slotBase = it.size <= kSmall ? smallBase : bigBase;
         stageImgs.push_back(loadPrx(it.raw, slotBase));
         PrxImage& si = stageImgs.back();
@@ -279,6 +281,7 @@ int main(int argc, char** argv) {
     }
 
     EmitResult r = emitAll(units, opts);
+    mgspo::stages::writeManifest(fs::path(out) / "stages.manifest", stageManifest);
     if (r.overlayFunctions)
       std::printf("overlay functions: %zu, distinct after de-duplication: %zu\n", r.overlayFunctions, r.overlayUnique);
     std::printf("wrote %zu files, %zu functions, %.1f MB, %zu untranslated instructions\n", r.files,

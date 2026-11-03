@@ -28,7 +28,8 @@ binary is in [docs/eboot-notes.md](docs/eboot-notes.md).
 
 You need your own legally obtained disc image of the US release (`ULUS10202`, plain `.iso`) and
 Visual Studio 2022 or Build Tools with the "Desktop development with C++" workload (this also
-brings CMake and Ninja). About 6 GB of free disk space is needed for the work directory.
+brings CMake and Ninja). Reserve at least **20 GiB** for the work directory. Before each uncached
+extract/lift/build step, the launcher requires **12 GiB free** on that drive.
 
 Build the tools once, then let the launcher do the rest:
 
@@ -44,10 +45,27 @@ started from an x86 developer prompt.) `play.bat` is a double-clickable wrapper 
 picker.
 
 The first run checks the disc id, extracts the disc, lifts the main module, helper modules and the
-default stage list, builds `mgspo-game` and starts it. The ISO path is remembered in
+**every stage module on the disc**, builds `mgspo-game` and starts it. The ISO path is remembered in
 `%LOCALAPPDATA%\MGSPO\launcher.ini`, and every step is cached, so later runs start the game
-straight away. If the game loads a stage that was not lifted, the launcher spots the `not lifted`
-line in the game log, adds the stage, re-lifts, rebuilds and restarts.
+without discovering/rebuilding stages during play. Setup, Build, Launch and update/rebuild all use
+this same all-stage policy. An older partial build is invalidated automatically; saves and input/icon
+settings are kept. `--no-relaunch` remains accepted for script compatibility, but automatic
+stage-guessing/relaunch is no longer used.
+
+The US disc contains **106 stage PRX files**. The first full lift produces roughly **493 MiB of C++**
+(about 1,577 generated files) and compilation uses **one job**, including Ninja's generated-game
+compilation pool. Expect tens of minutes or longer, depending on CPU/storage/toolchain; subsequent
+unchanged builds are cached. The UI remains responsive and logs per-stage lift and per-file compiler
+progress. Do not start competing heavy builds to accelerate it. Keep additional free disk space for
+objects, the executable and future update versions.
+
+Stages are enumerated recursively in deterministic order and duplicate paths are removed. A
+completed `gen\stages.manifest` records every module and its `_zar` relocation archive by content,
+and participates in cache validation together with ISO, source revision and tools. Additions,
+removals, content changes and missing/partial manifests invalidate the lift/build. Unsupported or
+encrypted stage files are explicit errors, not silently skipped stages. Compilation is **not**
+playthrough coverage: emitted unsupported-instruction traps and unimplemented imports can still
+block later gameplay, and compiling every overlay does not verify every mission.
 
 ### Desktop launcher (Windows)
 
@@ -55,7 +73,8 @@ Build `cmake --build build --target mgspo-desktop --parallel 1`, then double-cli
 `build\mgspo-desktop.exe`. This native Windows UI needs no console or additional UI framework.
 Browse for your ISO, choose **Modern gamepad** or **Legacy PSP mapping**, and choose **Build / setup ISO**
 or **Launch game**. Launch reuses the CLI's extract/lift/build pipeline and validates cached outputs
-before starting. The first build can take a long time. Install Visual Studio 2022 / Build Tools with
+before starting. **Build / setup ISO builds all stages up front**, with the same disk checks and
+long-first-build messaging as the CLI. Install Visual Studio 2022 / Build Tools with
 **Desktop development with C++**, including CMake and Ninja; missing-tool errors explain what to install.
 The UI does not install dependencies.
 
@@ -128,7 +147,7 @@ mgspo-launcher rebuild         redo lift and build from scratch
 mgspo-launcher clean [--saves] [--all]   remove generated files (keeps saves unless asked)
 mgspo-launcher status          show what is cached
   --work <dir>   work directory, default %LOCALAPPDATA%\MGSPO\work
-  --no-relaunch  do not rebuild and restart when another stage is needed
+  --no-relaunch  compatibility option (all stages now build up front; no automatic relaunch)
   -- <args>      passed to mgspo-game, e.g.  -- --headless --timeout 60
 ```
 
@@ -148,14 +167,11 @@ ctest --test-dir build
 build\mgspo-extract extract "Portable Ops.iso" disc PSP_GAME
 build\mgspo-extract eboot "Portable Ops.iso" boot
 
-:: lift the main module, the helper libraries and the stage modules you want
+:: lift the main module, helpers and ALL stages (the normal launcher default)
 set U=disc\PSP_GAME\USRDIR
 build\mgspo-lift boot\boot.elf gen ^
     --helper %U%\modules\zlibdec.prx --helper %U%\modules\kjfs.prx --helper %U%\modules\sound2.prx ^
-    --stage %U%\stage\init\init.prx --stage %U%\stage\r_main01\r_main01.prx ^
-    --stage %U%\stage\r_main02\r_main02.prx --stage %U%\stage\r_net01\r_net01.prx ^
-    --stage %U%\stage\gsmenu\gsmenu.prx --stage %U%\stage\title\title.prx ^
-    --stage %U%\stage\flashdemo\flashdemo.prx --stage %U%\stage\st04vo\st04vo.prx
+    --stage-dir "%U%\stage"
 
 :: build the game around the lifted code (re-run configure after every re-lift)
 cmake -S . -B bgame -G Ninja -DCMAKE_BUILD_TYPE=Release -DMGSPO_GENERATED_DIR=%CD%/gen -DMGSPO_BUILD_TESTS=OFF
@@ -169,10 +185,12 @@ Notes:
 
 - `boot.elf` is `PSP_GAME/SYSDIR/BOOT.BIN`, which is a plain ELF on this disc. A separately
   decrypted main module also works in its place.
-- `--stage <prx>` lifts a stage module as an overlay; `--stage-dir <dir>` does all of them. Lifting
-  every stage is huge (hundreds of MB of C++ and a long build), so lift only the stages the game
-  asks for. When the game loads a stage that was not lifted, the log shows `not lifted` with its
-  size; find the file with that size under `USRDIR\stage` and add it with `--stage`.
+- `--stage-dir <dir>` includes every `.prx` recursively (case-insensitive extension), sorted and
+  deduplicated with any explicit `--stage` inputs. Invalid/encrypted files, missing/empty stage
+  directories and filesystem errors fail visibly. The lifter writes the completed inventory only
+  after emission succeeds. `--stage <prx>` remains available for advanced, deliberately partial
+  manual builds; those can still stop when the game requests an omitted overlay. The launcher
+  always uses the complete disc stage directory.
 - Add `--headless --timeout 60 --ge-stats` to run without a window and print GE statistics, and
   `--ge-dump <file>` to dump the command lists.
 - Delete the `--save` folder between runs while debugging; the game behaves differently when it
