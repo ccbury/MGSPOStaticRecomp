@@ -243,7 +243,7 @@ static void test_texture_8888() {
     uint32_t col;
     float x, y, z;
   };
-  TV tv[2] = {{0, 0, 0xFFFFFFFF, 0, 0, 0}, {1, 1, 0xFFFFFFFF, 16, 16, 0}};
+  TV tv[2] = {{0, 0, 0xFFFFFFFF, 0, 0, 0}, {16, 16, 0xFFFFFFFF, 16, 16, 0}};
   std::memcpy(ptr(kVerts), tv, sizeof tv);
   Builder b = textured_sprite(3, 16, 16);
   b.vertex(kVerts, vt).prim(6, 2).finish();
@@ -275,7 +275,7 @@ static void test_texture_clut4_swizzled() {
     uint32_t col;
     float x, y, z;
   };
-  TV tv[2] = {{0, 0, 0xFFFFFFFF, 0, 0, 0}, {1, 1, 0xFFFFFFFF, 32, 8, 0}};
+  TV tv[2] = {{0, 0, 0xFFFFFFFF, 0, 0, 0}, {32, 8, 0xFFFFFFFF, 32, 8, 0}};
   std::memcpy(ptr(kVerts), tv, sizeof tv);
   Builder b;
   b.setup();
@@ -308,7 +308,7 @@ static void test_texture_dxt1() {
     uint32_t col;
     float x, y, z;
   };
-  TV tv[2] = {{0, 0, 0xFFFFFFFF, 0, 0, 0}, {1, 1, 0xFFFFFFFF, 4, 4, 0}};
+  TV tv[2] = {{0, 0, 0xFFFFFFFF, 0, 0, 0}, {4, 4, 0xFFFFFFFF, 4, 4, 0}};
   std::memcpy(ptr(kVerts), tv, sizeof tv);
   Builder b;
   b.setup();

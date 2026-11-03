@@ -176,7 +176,7 @@ The null-object fault after the movie (flash VM at 0x0884158C calling a handler 
 
 With that in, a 150 s run goes through the opening cutscene with subtitles and then loads a string of stage overlays (all already lifted) without faulting. Remaining issues seen in that run:
 
-- Movie frames: the AVC decode path was re-checked and is fine (see movies.md); any remaining banding on movie scenes is downstream of sceMpegAvcDecode.
+- Movie frames: the AVC decode path was re-checked and is fine (see movies.md). The banding seen in the flashdemo comic turned out to be a GE bug (through-mode uv scaling), not the decoder.
 - The run ends on `Main` still running with the sound threads waiting; I have not yet got to a playable stage.
 
 Keyboard and XInput mapping in `platform_win32.cpp` was re-read and is complete (arrows/IJKL, Z/X/A/S, Enter/RShift, Q/E; XInput buttons, triggers/shoulders and left stick with a deadzone).
@@ -210,5 +210,5 @@ After the fast rasteriser (see `docs/ge.md`): 16-19 flips/s in the cell, GE 290-
 ### Remaining blockers
 
 - Frame rate in game (see above).
-- In-game frames after the first scene look dark and blotchy; not yet diagnosed (fade, lighting or dither).
+- Rendering: the "dark and blotchy" frames were not reproducible. The prison cell, HUD, radar and in-game cutscenes look right (dim, olive lighting is just the stage). The one real rendering bug was the flashdemo comic: it drew coloured vertical bands instead of the panels (and is very likely the "16-pixel bands" seen earlier). See "Through-mode uv" in ge.md; fixed.
 - Movie frame decoding is handled elsewhere.
