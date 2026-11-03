@@ -13,7 +13,7 @@ The plan is the same one that has worked for other console projects:
 Nothing here ships any game code or data. See [docs/legal.md](docs/legal.md).
 
 ## Status
-
+Currently **In-game**. still work to be done
 Work in progress. The main module, the helper libraries and a chosen set of stage modules are
 lifted to C++ and run against the runtime. The game boots, loads its stage modules from the disc,
 streams and inflates their data and issues GE command lists. The intro movie plays (see
