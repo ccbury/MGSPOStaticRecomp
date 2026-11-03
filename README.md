@@ -49,6 +49,9 @@ default stage list, builds `mgspo-game` and starts it. The ISO path is remembere
 straight away. If the game loads a stage that was not lifted, the launcher spots the `not lifted`
 line in the game log, adds the stage, re-lifts, rebuilds and restarts.
 
+Moving to a different source checkout automatically resets the CMake configuration in the work
+directory before building. Extracted disc files and saves are kept.
+
 ```
 mgspo-launcher [run] [iso]     set up what is missing, then play (default)
 mgspo-launcher setup           extract, lift and build only
