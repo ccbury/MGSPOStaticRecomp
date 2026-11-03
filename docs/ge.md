@@ -72,9 +72,79 @@ and a small single-thread/two-thread output comparison; it needs no generated ga
 
 ### Profiling
 
-`--sample [delay]` starts a 1 kHz sampling profiler (Windows, needs debug symbols for names) and
+`--sample [delay]` starts a sampling profiler with a requested 1 ms interval (Windows, needs debug symbols for names) and
 prints the share of lifted guest code, GE, waiting and other runtime plus the top symbols when the
 run ends. `--profile` and `--ge-stats` give flips/s and GE time per second.
+
+For an optimized MSVC build with useful guest/runtime names, configure with
+`-DMGSPO_PROFILE_SYMBOLS=ON` and build with `--parallel 1`. This adds `/Zi` and
+linker `/DEBUG`, retaining `/OPT:REF` and `/OPT:ICF`; it does not switch Release
+compilation to Debug. The option is off by default. Keep the executable and PDB
+together when profiling.
+
+`--profile` also reports observed framebuffer-address-change intervals in vblank
+buckets (0, 1, 2, 3, 4, 5+), mean milliseconds between those changes, and completed
+guest display-vblank wait calls with their elapsed wall time. The first flip
+starts the baseline, not an interval. Multiple flips within one vblank remain in
+the zero bucket; display initialization resets the interval baseline.
+
+These are **observations, not a requested refresh rate**. Re-presenting a buffer
+does not imply a new image, and a guest vblank wait's elapsed time includes any
+other guest work scheduled while the caller is blocked. All-thread sampling
+percentages include parked guest/raster threads, so the aggregate waiting share
+is not the main thread's idle percentage. Both `NtDelayExecution` and
+`ZwDelayExecution` are classified as waiting, rather than charging the latter
+to active runtime work. The requested interval is not a guaranteed sampling
+rate: thread enumeration/suspension and host sleep resolution add overhead.
+Sampling itself can perturb scheduling.
+
+### Cadence investigation (two rendering threads)
+
+A controlled 140-second, fresh-save, headless run of the existing prison-stage
+workload used `MGSPO_GE_THREADS=2`, legacy controls and periodic Start/Cross input.
+After excluding the scene-transition window, 20 approximately five-second
+gameplay windows averaged 17.4 buffer flips/s and 345.6 ms of GE work per wall
+second (19.9 ms GE work per flip). Observed flip intervals were approximately
+57-58 ms, mostly three or four vblanks apart. These figures exclude title/movie
+windows; they are not a 60 fps target or a claim that the renderer alone limits
+the frame rate.
+
+Read-only inspection of the local lifted pacing routine found an initial
+two-vblank minimum and an adaptive elapsed-vblank threshold capped at six.
+Its dynamic threshold was not directly sampled, so the initial setting is not
+proof that every prison frame requests exactly two vblanks. Simulation, audio,
+vblank deadlines and guest pacing remain unchanged.
+
+Two candidates were evaluated sequentially on the same scripted workload:
+four-channel SIMD bilinear filtering and a constant-colour span specialization.
+Both passed targeted correctness checks but neither demonstrated an end-to-end
+gain (17.2/17.1 flips/s and 385.5/384.0 ms GE per wall second respectively).
+Both were discarded; neither is included in the renderer. These single-run
+comparisons are subject to host/scheduling variation, not statistical proof of
+a regression.
+
+A separate, symbolized 90-second run sampled the final 30 seconds in the prison
+scene. It identified indexed texture sampling as the largest active symbol;
+aggregate samples were 92.2% waiting, with 81.7% of non-wait samples in GE work.
+That sampling run still contained the subsequently discarded constant-span
+candidate and is diagnostic evidence, not an after-performance result for the
+unchanged renderer.
+
+The final diagnostic-only build, with symbols enabled and neither shader
+candidate, completed the same 140-second workload. Nineteen steady gameplay
+windows averaged 17.1 flips/s, 405.7 ms GE per wall second and 23.8 ms GE per flip.
+This is not a speedup: symbol/link-layout differences and host/scheduling
+variation were not isolated. The default build leaves symbol generation off.
+The retained changes improve measurement, not raster throughput; indexed texture
+sampling remains a profiling lead, not a validated optimization.
+
+All runs used sequential single-job builds, fresh isolated saves and CPU/memory
+monitoring with stop limits at 8 GiB minimum free physical/commit memory or
+8 GiB owned-tree private bytes. The four 140-second runs sampled under 87 MiB
+of private memory each, with over 20 GiB of physical headroom. Sampled resource
+peaks can miss transients. The ISO and existing user saves were not modified.
+No game assets, lifted code, or captures are part of these measurements' source
+changes.
 
 ### Numbers (prison cell, same machine)
 
@@ -84,8 +154,10 @@ run ends. `--profile` and `--ge-stats` give flips/s and GE time per second.
 | GE time per wall second | 580-790 ms | 290-390 ms |
 | ns per fragment | ~47 | ~10 |
 
-The guest's own frame pacing (about 30 fps) now mostly decides what is presented; the sampler shows
-the process waiting for vblank most of the time in this scene.
+These historical numbers do not establish that guest pacing is the dominant
+limit. See the controlled cadence investigation above for the distinction
+between aggregate thread waits, active GE cost and observed buffer changes.
+
 ## Debugging
 
 - `--ge-dump <file>` (or `MGSPO_GE_DUMP`) writes every executed command with its address.

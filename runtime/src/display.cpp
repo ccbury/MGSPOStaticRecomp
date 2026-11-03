@@ -15,7 +15,7 @@ namespace k {
 
 namespace {
 
-constexpr uint64_t kVblankUs = 16683;
+constexpr uint64_t kVblankUs = ProfileCounters::kVblankUs;
 
 struct FrameBuf {
   uint32_t addr = 0;
@@ -103,6 +103,7 @@ void present_frame() {
     pf.presentUs += t1 - t0;
     ++pf.presents;
     static uint64_t s_last = 0, s_ge = 0, s_pr = 0, s_pc = 0, s_fl = 0, s_sk = 0, s_gl = 0;
+    static uint64_t s_gap[6] = {}, s_intervals = 0, s_intervalUs = 0, s_waits = 0, s_waitUs = 0;
     if (t1 - s_last >= 5000000) {
       double win = static_cast<double>(t1 - s_last);
       if (s_last)
@@ -112,6 +113,18 @@ void present_frame() {
                      (unsigned long long)(pf.skipped - s_sk), (pf.geUs - s_ge) * 1000.0 / win,
                      (unsigned long long)(pf.geLists - s_gl), (pf.presentUs - s_pr) * 1000.0 / win,
                      (pf.presentUs - s_pr) / 1000.0 / std::max<double>(1, pf.presents - s_pc));
+      if (s_last)
+        std::fprintf(stderr,
+                     "[prof] observed flip gaps (vblanks) 0:%llu 1:%llu 2:%llu 3:%llu 4:%llu 5+:%llu; "
+                     "mean flip %.2f ms; guest vblank waits %llu (%.1f ms elapsed)\n",
+                     (unsigned long long)(pf.flipGap[0] - s_gap[0]), (unsigned long long)(pf.flipGap[1] - s_gap[1]),
+                     (unsigned long long)(pf.flipGap[2] - s_gap[2]), (unsigned long long)(pf.flipGap[3] - s_gap[3]),
+                     (unsigned long long)(pf.flipGap[4] - s_gap[4]), (unsigned long long)(pf.flipGap[5] - s_gap[5]),
+                     (pf.flipIntervalUs - s_intervalUs) / 1000.0 / std::max<uint64_t>(1, pf.flipIntervals - s_intervals),
+                     (unsigned long long)(pf.vblankWaits - s_waits), (pf.vblankWaitUs - s_waitUs) / 1000.0);
+      for (int i = 0; i < 6; ++i) s_gap[i] = pf.flipGap[i];
+      s_intervals = pf.flipIntervals; s_intervalUs = pf.flipIntervalUs;
+      s_waits = pf.vblankWaits; s_waitUs = pf.vblankWaitUs;
       s_last = t1; s_ge = pf.geUs; s_pr = pf.presentUs; s_pc = pf.presents; s_fl = pf.flips; s_sk = pf.skipped; s_gl = pf.geLists;
     }
   }
@@ -173,7 +186,13 @@ void present_frame_impl() {
 }
 
 void wait_vblank(Cpu& c, bool cb) {
+  ProfileCounters& pf = profile();
+  const uint64_t start = pf.enabled ? now_us() : 0;
   sleep_until(c, display_next_vblank_us(now_us()), cb);
+  if (pf.enabled) {
+    ++pf.vblankWaits;
+    pf.vblankWaitUs += now_us() - start;
+  }
   display_service();
   present_frame();
   ret(c, 0);
@@ -271,7 +290,10 @@ void display_set_gamepad_script(const std::string& s) {
 namespace {
 
 void h_set_framebuf(Cpu& c) {
-  if (arg(c, 0) != g_fb.addr) ++profile().flips;
+  if (arg(c, 0) != g_fb.addr) {
+    ProfileCounters& pf = profile();
+    pf.record_flip(pf.enabled ? now_us() : 0);
+  }
   g_fb.addr = arg(c, 0);
   g_fb.stride = arg(c, 1);
   g_fb.format = arg(c, 2);
@@ -371,6 +393,7 @@ void display_init() {
   g_vcount = 0;
   g_nextVblank = now_us() + kVblankUs;
   g_lastPresented = UINT64_MAX;
+  profile().hasLastFlip = false;
 }
 
 uint64_t display_next_vblank_us(uint64_t after) {
