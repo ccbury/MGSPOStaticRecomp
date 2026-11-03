@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "platform.h"
+#include <psp/game_controls.h>
 
 namespace psp {
 namespace plat {
@@ -193,6 +194,7 @@ Pad poll_pad() {
   };
   for (const Map& m : map)
     if (key(m.vk)) p.buttons |= m.bit;
+  p.otherDirections = p.buttons & 0xF0;
   // IJKL drives the analog stick
   int dx = 0, dy = 0;
   if (key('J')) dx -= 127;
@@ -203,10 +205,11 @@ Pad poll_pad() {
     XState st{};
     if (g_xinput(0, &st) == 0) {
       WORD b = st.pad.buttons;
-      if (b & 0x0001) p.buttons |= 0x10;
-      if (b & 0x0008) p.buttons |= 0x20;
-      if (b & 0x0002) p.buttons |= 0x40;
-      if (b & 0x0004) p.buttons |= 0x80;
+      p.gamepadDirections = ((b & 1) ? 0x10 : 0) | ((b & 8) ? 0x20 : 0) |
+                            ((b & 2) ? 0x40 : 0) | ((b & 4) ? 0x80 : 0);
+      p.buttons |= p.gamepadDirections;
+      p.cameraDirections = camera_directions(st.pad.rx, st.pad.ry);
+      p.gamepadActive = true;
       if (b & 0x0010) p.buttons |= 0x8;
       if (b & 0x0020) p.buttons |= 0x1;
       if (b & 0x0100) p.buttons |= 0x100;

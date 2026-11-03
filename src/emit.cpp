@@ -46,7 +46,32 @@ struct Ctx {
   const Function& fn;
   size_t unimpl = 0;
   bool overlay = false;
+  bool modernControls = false;
 };
+
+bool supportsModernControls(const PrxImage& img) {
+  const std::pair<uint32_t, uint32_t> signatures[] = {
+      {0x0884072C, 0x27BDFFF0}, {0x08840738, 0x00808021},
+      {0x0889814C, 0x27BDFFE0}, {0x08898158, 0x2623CB64},
+      {0x0889742C, 0x27BDFFF0}, {0x089142E0, 0x27BDFFF0},
+      {0x089142EC, 0x240500EE}, {0x088B52F8, 0x27BDFFC0}};
+  for (const auto& signature : signatures)
+    if (!img.contains(signature.first) || img.word(signature.first) != signature.second) return false;
+  return true;
+}
+
+std::string loadWord(Ctx& cx, const Insn& i) {
+  if (cx.modernControls) {
+    bool equipment = (i.addr >= 0x0889742C && i.addr < 0x088975CC) ||
+                     (i.addr >= 0x0889814C && i.addr < 0x0889875C);
+    bool camera = i.addr >= 0x089142E0 && i.addr < 0x08914518;
+    bool player = i.addr >= 0x088B52F8 && i.addr < 0x088B5BFC;
+    if (equipment || camera || player)
+      return "psp::controls_load(" + addrExpr(i) + ", psp::ControlConsumer::" +
+             (equipment ? "Equipment" : camera ? "Camera" : "Gameplay") + ")";
+  }
+  return "psp::lw(" + addrExpr(i) + ")";
+}
 
 std::string unimplStmt(Ctx& cx, const Insn& i) {
   ++cx.unimpl;
@@ -116,7 +141,8 @@ std::string simple(Ctx& cx, const Insn& i) {
     case Op::Lbu: return W(rt, "psp::lbu(" + addrExpr(i) + ")");
     case Op::Lh: return W(rt, "(uint32_t)(int32_t)psp::lh(" + addrExpr(i) + ")");
     case Op::Lhu: return W(rt, "psp::lhu(" + addrExpr(i) + ")");
-    case Op::Lw: case Op::Ll: return W(rt, "psp::lw(" + addrExpr(i) + ")");
+    case Op::Lw: return W(rt, loadWord(cx, i));
+    case Op::Ll: return W(rt, "psp::lw(" + addrExpr(i) + ")");
     case Op::Lwl: return W(rt, "psp::lwl(" + addrExpr(i) + ", " + R(rt) + ")");
     case Op::Lwr: return W(rt, "psp::lwr(" + addrExpr(i) + ", " + R(rt) + ")");
     case Op::Sb: return "psp::sb(" + addrExpr(i) + ", " + R(rt) + ");";
@@ -195,6 +221,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
   const PrxImage& img = *prog.img;
   Ctx cx{prog, fn};
   cx.overlay = overlay;
+  cx.modernControls = !overlay && supportsModernControls(img);
 
   auto inFn = [&](uint32_t a) { return a >= fn.start && a < fn.end; };
 
@@ -215,6 +242,10 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
   std::set<uint32_t> skip, terminal;
   out += "void " + (overlay ? std::string(kOverlayNameToken) : funcName(fn.start)) + "(psp::Cpu& c) {\n";
     out += "  psp::Frame fr_(c, " + hex32(fn.start) + ");\n";
+  if (cx.modernControls && fn.start == 0x0884072C)
+    out += "  psp::controls_guest_sample(c.r[4], c.r[5]);\n";
+  if (cx.modernControls && fn.start == 0x0889814C)
+    out += "  psp::controls_equipment(c);\n";
 
     auto delayOf = [&](uint32_t pc) {
     Insn d = decode(img.word(pc + 4), pc + 4);
@@ -460,6 +491,7 @@ EmitResult emitAll(const std::vector<ModuleUnit>& units, const EmitOptions& opts
       "extern const psp::FuncEntry kFuncs[];\nextern const size_t kFuncCount;\n"
       "extern const psp::ImportEntry kImports[];\nextern const size_t kImportCount;\n"
       "extern const psp::ModuleDesc kModules[];\nextern const size_t kModuleCount;\n"
+      "constexpr bool kModernControlsSupported = " + std::string(supportsModernControls(mainImg) ? "true" : "false") + ";\n"
       "constexpr uint32_t kModuleBase = " + hex32(mainImg.base) + ";\n"
       "constexpr uint32_t kOverlayBase = " + hex32(ovBase) + ";\n"
       "constexpr uint32_t kOverlayEnd = " + hex32(ovEnd) + ";\n"

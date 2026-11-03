@@ -6,6 +6,7 @@
 #include "cpu.h"
 #include "memory.h"
 #include "ops.h"
+#include "game_controls.h"
 
 namespace psp {
 

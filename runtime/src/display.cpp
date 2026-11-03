@@ -1,8 +1,10 @@
 // sceDisplay and sceCtrl. Vblank is derived from the kernel clock at 59.94 Hz.
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include "kernel_internal.h"
@@ -193,12 +195,14 @@ namespace {
 
 struct PressStep { uint64_t frame; uint64_t frames; uint32_t mask; int lx; int ly; };
 std::vector<PressStep> g_pressScript;
+std::vector<PressStep> g_gamepadScript;
 
 }  // namespace
 
 // "sec:mask[:hold[:lx:ly]],..." : each entry holds the buttons (and an optional stick position, -128..127)
 // for `hold` seconds (default 0.5) starting at that time.
-void display_set_press_script(const std::string& s) {
+static void parse_press_script(const std::string& s, std::vector<PressStep>& script, bool strict = false) {
+  std::vector<PressStep> parsed;
   size_t pos = 0;
   while (pos < s.size()) {
     size_t end = s.find(',', pos);
@@ -211,19 +215,57 @@ void display_set_press_script(const std::string& s) {
       f.push_back(item.substr(a, b - a));
       a = b + 1;
     }
+    if (strict && f.size() != 2 && f.size() != 3 && f.size() != 5)
+      throw std::invalid_argument("expected time:mask[:hold[:rx:ry]]");
     if (f.size() >= 2) {
       double sec = std::strtod(f[0].c_str(), nullptr);
       double hold = f.size() > 2 ? std::strtod(f[2].c_str(), nullptr) : 0.5;
+      if (strict) {
+        size_t used = 0;
+        sec = std::stod(f[0], &used);
+        if (used != f[0].size()) throw std::invalid_argument("invalid time");
+        if (f.size() > 2) {
+          hold = std::stod(f[2], &used);
+          if (used != f[2].size()) throw std::invalid_argument("invalid hold");
+        }
+        if (!std::isfinite(sec) || !std::isfinite(hold) || sec < 0 || hold <= 0 ||
+            sec + hold >= static_cast<double>(UINT64_MAX / 60))
+          throw std::invalid_argument("time/hold out of range");
+      }
       PressStep st;
       st.frame = static_cast<uint64_t>(sec * 60.0);
       st.frames = static_cast<uint64_t>(hold * 60.0);
       st.mask = static_cast<uint32_t>(std::strtoul(f[1].c_str(), nullptr, 0));
-      st.lx = f.size() > 4 ? std::atoi(f[3].c_str()) : 0;
-      st.ly = f.size() > 4 ? std::atoi(f[4].c_str()) : 0;
-      g_pressScript.push_back(st);
+      st.lx = !strict && f.size() > 4 ? std::atoi(f[3].c_str()) : 0;
+      st.ly = !strict && f.size() > 4 ? std::atoi(f[4].c_str()) : 0;
+      if (strict) {
+        size_t used = 0;
+        auto mask = std::stoull(f[1], &used, 0);
+        if (f[1].empty() || f[1][0] == '-' || used != f[1].size() || mask > UINT32_MAX)
+          throw std::invalid_argument("invalid PSP button mask");
+        st.mask = static_cast<uint32_t>(mask);
+        if (f.size() == 5) {
+          st.lx = std::stoi(f[3], &used);
+          if (used != f[3].size()) throw std::invalid_argument("invalid right-stick X");
+          st.ly = std::stoi(f[4], &used);
+          if (used != f[4].size()) throw std::invalid_argument("invalid right-stick Y");
+          if (st.lx < -128 || st.lx > 127 || st.ly < -128 || st.ly > 127)
+            throw std::invalid_argument("right-stick axes must be -128..127");
+        }
+        if (!st.frames) throw std::invalid_argument("hold must cover at least one vblank");
+      }
+      parsed.push_back(st);
     }
     pos = end + 1;
   }
+  script.insert(script.end(), parsed.begin(), parsed.end());
+}
+
+void display_set_press_script(const std::string& s) { parse_press_script(s, g_pressScript); }
+
+void display_set_gamepad_script(const std::string& s) {
+  if (s.empty()) throw std::invalid_argument("gamepad script is empty");
+  parse_press_script(s, g_gamepadScript, true);
 }
 
 namespace {
@@ -259,15 +301,30 @@ CtrlState g_ctrl;
 void write_pad(uint32_t buf, uint32_t count, bool negative) {
   plat::Pad p = plat::poll_pad();
   // Scripted input for unattended runs: held for 5 frames out of every 40.
-  if (g_autoButtons && (g_vcount % 40) < 5) p.buttons |= g_autoButtons;
+  if (g_autoButtons && (g_vcount % 40) < 5) {
+    p.buttons |= g_autoButtons;
+    p.otherDirections |= g_autoButtons & 0xF0;
+  }
   for (const PressStep& st : g_pressScript)
     if (g_vcount >= st.frame && g_vcount < st.frame + st.frames) {
       p.buttons |= st.mask;
+      p.otherDirections |= st.mask & 0xF0;
       if (st.lx || st.ly) {
         p.lx = static_cast<uint8_t>(128 + st.lx);
         p.ly = static_cast<uint8_t>(128 + st.ly);
       }
     }
+  for (const PressStep& st : g_gamepadScript)
+    if (g_vcount >= st.frame && g_vcount < st.frame + st.frames) {
+      p.buttons |= st.mask;
+      p.gamepadDirections |= st.mask & 0xF0;
+      int x = std::clamp(st.lx, -128, 127) * 256;
+      int y = std::clamp(-st.ly * 256, -32768, 32767);
+      p.cameraDirections |= camera_directions(static_cast<int16_t>(x), static_cast<int16_t>(y));
+      p.gamepadActive = true;
+    }
+  p.otherDirections |= p.buttons & ~p.gamepadDirections & 0xF0;
+  controls_host_sample(p.gamepadDirections, p.cameraDirections, p.otherDirections, p.gamepadActive);
   for (uint32_t i = 0; i < std::max<uint32_t>(count, 1); ++i) {
     uint32_t a = buf + i * 16;
     uint32_t buttons = negative ? ~p.buttons : p.buttons;

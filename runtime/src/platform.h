@@ -16,6 +16,8 @@ bool quit_requested();
 struct Pad {
   uint32_t buttons = 0;
   uint8_t lx = 128, ly = 128;
+  uint32_t gamepadDirections = 0, cameraDirections = 0, otherDirections = 0;
+  bool gamepadActive = false;
 };
 Pad poll_pad();
 
