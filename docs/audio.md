@@ -38,6 +38,14 @@ independent decoder on a real stream and the output matched sample for sample (a
 queries. Streams are expected to be fully resident; the streaming functions (`AddStreamData` and friends)
 are not provided because the game does not call them.
 
+`sceAtracSetLoopNum` rejects streams without loop metadata with `0x80630021`
+(no loop information), including requests for zero repeats, and leaves their loop count at zero.
+This matters beyond audio playback: `sound2` requests infinite looping even for non-looped voice
+clips, then uses the reported loop count to choose its end-of-stream mixing path. Accepting that
+request could leave its high-priority mixer spinning without consuming samples after a short final
+grain, starving the main thread on a black screen when skipping the prison-door conversation.
+Finite and infinite looping remain supported for streams with loop metadata.
+
 ATRAC3+ (wave format tag 0xFFFE) goes through `atrac3plus.cpp`, a mono/stereo decoder that produces 2048 samples
 per frame. The bitstream parser (`atrac3p/bitstream.cpp`), the synthesis DSP (`atrac3p/dsp.cpp`) and the
 Huffman/spectral tables are taken from FFmpeg's libavcodec ATRAC3+ decoder (Maxim Poliakovski, LGPL-2.1-or-later).
@@ -65,3 +73,8 @@ decoder) are set; without them only the synthetic cases run, so no game data is 
 `mgspo-audio-tests` covers the ADPCM decoder, envelopes, voice mixing and end flags, the ATRAC RIFF parser,
 ATRAC3+ error handling and the HLE entry points. No game data is used unless the environment variables above
 are set.
+
+The loop HLE regression builds synthetic RIFF streams from terminator-only ATRAC3+ frames. It checks
+rejected negative/zero/positive loop requests on a non-looped stream, unchanged loop status, a
+three-sample final partial frame and EOF, reset, finite loop-count exhaustion, and infinite looping
+followed by disabling the loop. The regression fails against the old unconditional loop setter.

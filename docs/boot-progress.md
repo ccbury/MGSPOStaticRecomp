@@ -212,3 +212,31 @@ After the fast rasteriser (see `docs/ge.md`): 16-19 flips/s in the cell, GE 290-
 - Frame rate in game (see above).
 - Rendering: the "dark and blotchy" frames were not reproducible. The prison cell, HUD, radar and in-game cutscenes look right (dim, olive lighting is just the stage). The one real rendering bug was the flashdemo comic: it drew coloured vertical bands instead of the panels (and is very likely the "16-pixel bands" seen earlier). See "Through-mode uv" in ge.md; fixed.
 - Movie frame decoding is handled elsewhere.
+
+## Prison progression and save/load follow-up
+
+Follow-up used only the existing eight-stage subset (`init`, `r_main01`, `r_main02`, `r_net01`,
+`gsmenu`, `title`, `flashdemo`, `st04vo`), serialized Release builds and two total renderer threads.
+The through-mode UV correction was already present; no additional GE change was needed.
+
+- Periodic Start input opens and closes the prison pause menu. Full-frame inspection showed the
+  TEAM ALPHA / PRISON labels, selection, help text, floor map and radar. Its hatched background
+  is populated menu content, not evidence of missing panels. This does not certify every menu.
+- A fresh isolated new game wrote a 42,512-byte save. A new process with a copy of only that
+  disposable save reached LOAD GAME / DIFFICULTY SELECT and returned through the intro to the cell
+  without name entry. The save hash stayed unchanged. This verifies the initial save/load round
+  trip, not a later mission checkpoint; no user saves were used.
+- Trying the locked cell door triggers the Campbell conversation. The escape route is crawling
+  through the vent under the bed, not opening that door. Numbered local frames verified emerging
+  into the adjoining corridor; movement and posture changes continued there.
+- An intermittent black-screen stall while skipping the conversation was localized to the
+  `sound2` mixer, not GE: all active samples in two late profiles were in its mixing function.
+  The ATRAC HLE incorrectly accepted infinite looping on a non-looped voice clip. It now rejects
+  that request and preserves zero loop status (see [audio.md](audio.md)). Two sequential
+  post-fix replays (240 and 300 seconds) passed the transition, escaped the cell and rendered
+  complete pause menus. This is bounded evidence, not proof that every black-screen cause is fixed.
+
+No new stage overlay was requested or missing in those runs. Scripted navigation stopped in the
+prison corridor; the next stage and a later checkpoint save/load remain unverified. Modern-capable
+generated hooks were present, but raw scripted PSP button/stick input does not establish physical
+controller routing or owned-weapon equip behavior; those checks also remain open.
