@@ -38,7 +38,8 @@ block transfers.
 
 - `--ge-dump <file>` (or `MGSPO_GE_DUMP`) writes every executed command with its address.
   `MGSPO_GE_DUMP_FROM=<n>` skips the dump until the n-th enqueued list, which keeps the file small
-  when the interesting frame is far into a run. `MGSPO_VDUMP=1` additionally prints the first eight
+  when the interesting frame is far into a run. `MGSPO_GE_DUMP_WHEN=<file>` only dumps while that
+  file exists, so you can `touch` it when the frame of interest is on screen. `MGSPO_VDUMP=1` additionally prints the first eight
   transformed vertices (position, uv, colour) after each `PRIM`.
 - `--ge-stats` (or `MGSPO_GE_STATS=1`) prints list/draw/primitive counts, vertex types, texture and
   framebuffer formats and per-command counts when the run ends.
