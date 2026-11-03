@@ -32,6 +32,7 @@ struct File {
   bool canWrite = false;
   int64_t offset = 0;  // window into the disc image for sce_lbn paths
   int64_t limit = -1;
+  bool sectors = false;  // raw disc device: seek and read sizes are in 2048-byte sectors
 };
 
 struct Dir {
@@ -206,6 +207,7 @@ int open_file(const std::string& vpath, uint32_t flags, uint32_t& err) {
       File& file = g_files[fd];
       file.f = f;
       file.vpath = vpath;
+      file.sectors = true;
       return fd;
     }
   }
@@ -259,8 +261,13 @@ int64_t do_read(int fd, uint32_t buf, uint32_t size) {
   auto it = g_files.find(fd);
   if (it == g_files.end()) return static_cast<int32_t>(E_IO_BADF);
   if (!size) return 0;
-  ptr(buf + size - 1);
   File& file = it->second;
+  if (file.sectors) {
+    uint64_t bytes = static_cast<uint64_t>(size) * 2048;
+    ptr(buf + static_cast<uint32_t>(bytes) - 1);
+    return static_cast<int64_t>(std::fread(ptr(buf), 1, static_cast<size_t>(bytes), file.f) / 2048);
+  }
+  ptr(buf + size - 1);
   if (file.limit >= 0) {
     int64_t pos = TELL64(file.f) - file.offset;
     int64_t left = std::max<int64_t>(0, file.limit - pos);
@@ -290,6 +297,19 @@ int64_t do_seek(int fd, int64_t off, int whence) {
   auto it = g_files.find(fd);
   if (it == g_files.end()) return static_cast<int32_t>(E_IO_BADF);
   File& file = it->second;
+  if (file.sectors) {
+    int64_t pos = whence == 0 ? off * 2048 : 0;
+    if (whence == 1) {
+      SEEK64(file.f, off * 2048, SEEK_CUR);
+      return TELL64(file.f) / 2048;
+    }
+    if (whence == 2) {
+      SEEK64(file.f, off * 2048, SEEK_END);
+      return TELL64(file.f) / 2048;
+    }
+    SEEK64(file.f, pos, SEEK_SET);
+    return off;
+  }
   if (file.limit >= 0) {
     int64_t cur = TELL64(file.f) - file.offset;
     int64_t pos = whence == 0 ? off : whence == 1 ? cur + off : file.limit + off;

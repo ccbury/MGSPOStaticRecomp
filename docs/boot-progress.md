@@ -172,7 +172,14 @@ Next blockers, roughly in order:
 
 ### Where it stops now
 
-After the movie the flash VM (bytecode interpreter at 0x0884158C, dispatch table at 0x08B92B04) calls a handler with a null object and faults at `0x000000A8`. The object comes from the scene list walked by 0x0883F464; the likeliest cause is an async load (kjfs read, 0x4D8 bytes) or the `fdemo_sound_Load` thread that is still sleeping when the VM runs. Start there next.
+The null-object fault after the movie (flash VM at 0x0884158C calling a handler with a null object, fault at `0x000000A8`) is fixed. It was not a threading problem: the game reads its flash data from the raw `umd1:` device with `sceIoLseekAsync`/`sceIoReadAsync`, and on that device both the offsets and the read sizes are in 2048-byte sectors, not bytes. We were treating them as bytes, so the object table was filled with garbage and the handle lookup in 0x0899AC94 returned 0. Raw `umd` files now convert seeks and reads to sectors.
+
+With that in, a 150 s run goes through the opening cutscene with subtitles and then loads a string of stage overlays (all already lifted) without faulting. Remaining issues seen in that run:
+
+- Movie frames are wrong: the picture is a handful of flat vertical colour bands (roughly 16-pixel-wide strips) with the subtitles drawn correctly on top. The AVC decode in `mpeg.cpp` is only producing partial output, so that is the next thing to look at.
+- The run ends on `Main` still running with the sound threads waiting; I have not yet got to a playable stage.
+
+Keyboard and XInput mapping in `platform_win32.cpp` was re-read and is complete (arrows/IJKL, Z/X/A/S, Enter/RShift, Q/E; XInput buttons, triggers/shoulders and left stick with a deadzone).
 
 ### Performance
 
