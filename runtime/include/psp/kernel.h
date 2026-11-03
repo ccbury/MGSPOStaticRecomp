@@ -29,6 +29,7 @@ void register_all_hle();
 
 // Runs the module entry on the calling host thread as the PSP "user main" thread and returns once
 // the game exits, every thread has finished, or the program is stuck. Returns a process exit code.
+void kernel_dump_threads(FILE* f);
 int kernel_run_main(uint32_t entry, uint32_t argSize = 0, const void* args = nullptr);
 
 }  // namespace psp

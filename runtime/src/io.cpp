@@ -191,7 +191,25 @@ int open_file(const std::string& vpath, uint32_t flags, uint32_t& err) {
     file.limit = static_cast<int64_t>(sectors);
     SEEK64(f, file.offset, SEEK_SET);
     return fd;
-  }  fs::path path;
+  }
+  {
+    // the raw disc device ("umd1:") reads straight from the image
+    std::string lowerPath;
+    for (char ch : vpath) lowerPath.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    if ((lowerPath == "umd1:" || lowerPath == "umd0:" || lowerPath == "umd:") && !config().discImage.empty()) {
+      FILE* f = std::fopen(config().discImage.c_str(), "rb");
+      if (!f) {
+        err = E_IO_NOENT;
+        return -1;
+      }
+      int fd = g_nextFd++;
+      File& file = g_files[fd];
+      file.f = f;
+      file.vpath = vpath;
+      return fd;
+    }
+  }
+  fs::path path;
   bool writable = false;
   if (!resolve(vpath, path, writable)) {
     err = E_IO_NODEV;
@@ -314,8 +332,12 @@ void h_open(Cpu& c) {
 
 void h_open_async(Cpu& c) {
   uint32_t err = 0;
-  int fd = open_file(cstr(arg(c, 0)), arg(c, 1), err);
+  std::string vpath = cstr(arg(c, 0));
+  int fd = open_file(vpath, arg(c, 1), err);
   if (fd < 0) {
+    static std::set<std::string> reported;
+    if (reported.insert(vpath).second)
+      std::fprintf(stderr, "[io] sceIoOpenAsync(%s, flags %X) failed: %08X\n", vpath.c_str(), arg(c, 1), err);
     // the error is delivered through the async result of a pseudo descriptor
     fd = g_nextFd++;
     g_async[fd] = static_cast<int32_t>(err);

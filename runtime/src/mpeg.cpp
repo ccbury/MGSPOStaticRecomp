@@ -160,13 +160,23 @@ void h_rb_put(Cpu& c) {
     sw(rb + kRbRead, lw(rb + kRbRead) + got);
     total += got;
     n -= got;
-    if (static_cast<uint32_t>(got) < chunk) break;
+    if (static_cast<uint32_t>(got) < chunk) {
+      // a short read means the file ended; flush the picture still being assembled
+      if (!x->eof) {
+        x->eof = true;
+        x->demux.finish();
+      }
+      break;
+    }
   }
   if (ended && total == 0 && !x->eof) {
     x->eof = true;
     x->demux.finish();
   }
   sync_ring(*x);
+  if (std::getenv("MGSPO_MPEG_DEBUG"))
+    std::fprintf(stderr, "mpeg put want=%u avail=%u used=%u -> %u eof=%d t=%llums\n", want, avail, used, total, x->eof,
+                 (unsigned long long)(now_us() / 1000));
   ret(c, total);
 }
 

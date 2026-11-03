@@ -54,6 +54,7 @@ static void write_report(const std::string& path) {
     psp::write_import_report(stderr);
   }
   psp::ge_write_stats(stderr);
+  psp::kernel_dump_threads(stderr);
   std::fflush(nullptr);
 }
 

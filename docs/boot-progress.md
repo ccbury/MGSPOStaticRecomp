@@ -156,4 +156,24 @@ Next blockers, roughly in order:
 
 - The GE blend register was decoded wrongly (source factor is bits 0-3, destination bits 4-7, function bits 8-10). Fixing it makes the title menu text and background render.
 - Start now reaches the title menu; New Game reaches the name entry prompt.
-- sceUtility msgdialog and OSK have basic HLE, but the OSK result struct layout is not right yet, so the game reports 'entered text is too short' and loops. Next blocker.
+- The OSK result is fixed (see below). Next blockers are listed at the end of this file.
+
+## Name entry, savedata and the opening movie
+
+- OSK data struct: `outtextlength` +0x24 is the buffer size (0x200), `outtext` +0x28, `result` +0x2C (2 = finished), `outtextlimit` +0x30. The HLE writes the name as UTF-16 into `outtext` and reports the length in characters. The common header is 0x30 bytes, so the data pointer sits at +0x34.
+- The game filters names, so the stub name has to be an ordinary word (it uses JACK). A name that looks like a banned word gets a msgdialog and the prompt repeats.
+- `sceUtilitySavedata*` is implemented against `<save>/PSP/SAVEDATA/<gameName><saveName>/<fileName>`. Modes load/save/list-load/list-save/delete are handled, everything else reports success. `saveNameList` (+0x60) is an array of `char[20]` names, not an array of pointers.
+- `umd0:`/`umd1:` are served as the raw disc image (offset 0), which the game polls with `sceIoOpenAsync("umd1:")` before streaming from sector offsets. Without it the game spins forever on error 0x80010013. It needs `--iso`.
+- The first cutscene is `stage/flashdemo/flashdemo.prx`: it has to be lifted like the other stages. It is a flash-style comic with an `sceMpeg` movie on top.
+- Menu confirm is Circle here, not Cross.
+- Movie end: a short read from the ring buffer callback now marks EOF and flushes the demuxer, so the last pictures are delivered and the game tears the movie down.
+- `sceKernelReleaseWaitThread` on a thread that is inside `sceKernelDelayThread` used to wake the delay, after which the thread blocked in its next semaphore wait with the "stop" flag unread. The release is now remembered and cancels that next semaphore wait. This unblocked the sound-buffer thread join that froze the screen at the end of the movie.
+- `--timeout` now also prints the state of every guest thread (name, wait type and id), which is the quickest way to find a hang.
+
+### Where it stops now
+
+After the movie the flash VM (bytecode interpreter at 0x0884158C, dispatch table at 0x08B92B04) calls a handler with a null object and faults at `0x000000A8`. The object comes from the scene list walked by 0x0883F464; the likeliest cause is an async load (kjfs read, 0x4D8 bytes) or the `fdemo_sound_Load` thread that is still sleeping when the VM runs. Start there next.
+
+### Performance
+
+Headless, the software GE plus the movie decoder run at roughly 20-25 fps in the movie scenes (game time falls behind wall time). Ideas, roughly in order of payoff: split the rasteriser into screen tiles and fill them on worker threads; use SIMD (SSE2/AVX2) for flat and Gouraud triangle spans; cache decoded textures (swizzle and CLUT lookups) per texture address and mark them dirty on writes; skip the full-screen clears that are overwritten by a full-screen sprite; decode the movie on its own thread instead of inside `sceMpegAvcDecode`.
