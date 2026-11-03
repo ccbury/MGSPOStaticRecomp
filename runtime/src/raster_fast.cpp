@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -224,17 +226,34 @@ class Pool {
 
 int g_threads = -1;
 Pool* g_pool = nullptr;
+constexpr int kMaxThreads = 6;
+
+int bounded_threads(long n) {
+  const int bounded = static_cast<int>(std::clamp(n, 1L, static_cast<long>(kMaxThreads)));
+  if (n != bounded)
+    std::fprintf(stderr, "[GE] thread count %ld clamped to %d (supported range 1-%d)\n", n, bounded, kMaxThreads);
+  return bounded;
+}
 
 int default_threads() {
-  if (const char* e = std::getenv("MGSPO_GE_THREADS")) return std::max(1, std::atoi(e));
+  if (const char* e = std::getenv("MGSPO_GE_THREADS")) {
+    char* end = nullptr;
+    errno = 0;
+    const long n = std::strtol(e, &end, 10);
+    if (errno == ERANGE || end == e || *end != '\0') {
+      std::fprintf(stderr, "[GE] invalid MGSPO_GE_THREADS; using one rendering thread\n");
+      return 1;
+    }
+    return bounded_threads(n);
+  }
   unsigned hw = std::thread::hardware_concurrency();
-  return static_cast<int>(std::clamp<unsigned>(hw / 2, 1, 6));
+  return static_cast<int>(std::clamp<unsigned>(hw / 2, 1, kMaxThreads));
 }
 
 }  // namespace
 
 void set_threads(int n) {
-  if (!g_pool) g_threads = std::max(1, n);
+  if (!g_pool) g_threads = bounded_threads(n);
 }
 
 namespace { int g_mode = -1; }
@@ -257,6 +276,9 @@ int threads() {
 
 bool texture_lookup(const TexSource& s, Texture& out) {
   if (s.fmt < 0 || s.fmt > 5 || s.w < 1 || s.h < 1 || s.bufW < 1) return false;
+  const size_t decodedBpp = s.fmt >= 4 ? 1 : sizeof(uint32_t);
+  if (static_cast<size_t>(s.w) > kMaxBytes / decodedBpp / static_cast<size_t>(s.h)) return false;
+  const size_t incoming = static_cast<size_t>(s.w) * s.h * decodedBpp;
   const int bits = s.fmt == 3 ? 32 : (s.fmt == 4 ? 4 : (s.fmt == 5 ? 8 : 16));
   const size_t rowBytes = static_cast<size_t>(s.bufW) * bits / 8;
   const size_t rows = s.swizzled ? ((static_cast<size_t>(s.h) + 7) & ~size_t(7)) : static_cast<size_t>(s.h);
@@ -277,7 +299,7 @@ bool texture_lookup(const TexSource& s, Texture& out) {
     sync();
     size_t total = 0;
     for (const CacheEntry& e : g_cache) total += e.rgba.size() * 4 + e.idx.size();
-    while (!g_cache.empty() && (g_cache.size() >= kMaxEntries || total > kMaxBytes)) {
+    while (!g_cache.empty() && (g_cache.size() >= kMaxEntries || total > kMaxBytes - incoming)) {
       auto victim = std::min_element(g_cache.begin(), g_cache.end(), [](const CacheEntry& a, const CacheEntry& b) { return a.used < b.used; });
       total -= victim->rgba.size() * 4 + victim->idx.size();
       g_cache.erase(victim);
@@ -549,6 +571,8 @@ struct Draw {
 
 std::vector<Draw> g_draws;
 std::vector<Batch::Prim> g_prims;
+constexpr size_t kMaxDraws = 1024;
+constexpr size_t kMaxPrims = 4096;
 int64_t g_area = 0;
 int g_minRow = 0x7FFFFFFF, g_maxRow = -1;
 uint64_t g_epoch = 0;
@@ -641,6 +665,8 @@ void Batch::begin(const Ctx* cx, const uint32_t* pal, int cat) {
 }
 
 void Batch::open() {
+  // Drain before growing either queue, including when a single batch spans the primitive limit.
+  if (g_prims.size() >= kMaxPrims || (epoch_ != g_epoch && g_draws.size() >= kMaxDraws)) sync();
   if (epoch_ == g_epoch) return;
   if (!g_draws.empty() && !same_target(g_draws.back().cx, *cx_)) sync();
   g_draws.emplace_back();

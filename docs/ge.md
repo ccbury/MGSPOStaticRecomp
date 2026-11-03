@@ -45,13 +45,20 @@ reference (`MGSPO_GE_REF=1` forces it).
 - 12 templated span functions (textured or not, blended or not, depth test or not) are picked per draw,
   so the per-fragment loop has no state switches.
 - Draws are queued, not drawn: `fast::sync()` renders the queue split into bands of rows on a small
-  thread pool (`MGSPO_GE_THREADS`, default half the logical CPUs, max 6). Inside a band draws keep
+  thread pool (`MGSPO_GE_THREADS`, default half the logical CPUs, total rendering threads clamped
+  to 1-6 including the calling thread). Invalid environment values report a diagnostic and use one
+  thread; out-of-range counts are clamped with a diagnostic. Inside a band draws keep
   their order and bands never overlap, so the output does not depend on the thread count. The queue
   is synced at the end of every list, before block transfers, before any reference-path pixel work,
-  and before textures that live in VRAM or when a cached texture is replaced.
+  and before textures that live in VRAM or when a cached texture is replaced. It also drains
+  synchronously before exceeding 1,024 draws or 4,096 primitives, preserving draw order and palettes
+  rather than dropping work. Queue and cache mutation stay on the GE caller; sync waits for workers
+  before clearing or reusing their data.
 - Textures are decoded once into a cache keyed by address, format and size (swizzle and 16-bit formats
   to RGBA8888; CLUT8/CLUT4 to indices with the palette applied per fragment). A content hash of the
-  source bytes detects rewrites.
+  source bytes detects rewrites. The LRU cache holds at most 96 entries and 96 MiB of decoded
+  texels, accounting for an incoming entry before allocating it. Sources larger than that budget
+  use the reference path.
 - Not handled (falls back to the reference path): colour test, stencil, logic op, secondary colour with
   lighting, DXT and CLUT16/32 textures, and coordinates beyond +-8192. Clear-mode rectangles use a
   dedicated fill.
@@ -60,6 +67,8 @@ reference (`MGSPO_GE_REF=1` forces it).
 
 `tests/test_ge.cpp` renders 128 random through-mode scenes with both paths and compares them. Edge
 coverage differs by about 0.5% of pixels because the reference path uses float vertices.
+`mgspo-raster-tests` is a standalone resource-boundary check with one-pixel queue/eviction cases
+and a small single-thread/two-thread output comparison; it needs no generated game code.
 
 ### Profiling
 

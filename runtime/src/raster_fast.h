@@ -74,7 +74,7 @@ struct TexSource {
 };
 
 // Decodes (or finds in the cache) the texture. Formats 0-5 only. The source bytes are hashed on every call so
-// stale data is never used. Returns false if the format is not handled.
+// stale data is never used. Returns false for unsupported formats or sources outside the cache budget.
 bool texture_lookup(const TexSource& src, Texture& out);
 
 // Primitives are not rendered right away. Each draw call appends its triangles and sprites to a global queue
@@ -82,7 +82,7 @@ bool texture_lookup(const TexSource& src, Texture& out);
 // that run on worker threads. Draws that follow each other in the queue stay in order inside every band, and
 // bands never overlap, so the result does not depend on the thread count. The queue must be synced before
 // anything else reads or writes VRAM (end of a list, block transfers, reference-path pixels, textures that
-// live in VRAM).
+// live in VRAM). Capacity limits also drain the queue synchronously; no draws are discarded.
 class Batch {
  public:
   struct Prim;
@@ -113,7 +113,7 @@ void set_stats_sink(uint64_t* fragments, uint64_t* catNs);
 void clear_rect(const Ctx& cx, int x0, int y0, int x1, int y1, bool clearColour, bool clearAlpha, bool clearDepth, uint32_t rgba,
                 uint16_t z);
 
-// Number of worker threads used for large batches (0 or 1 = single threaded).
+// Total rendering threads, including the caller, clamped to 1..6 (0 or 1 = single threaded).
 void set_threads(int n);
 
 // MGSPO_GE_REF=1 forces the reference rasteriser.
