@@ -171,9 +171,10 @@ Q/E = L/R, Enter = start, Right Shift = select, IJKL = analog stick.
 
 XInput gamepads use **modern controls** by default: left stick moves, right stick controls the
 gameplay camera, and the D-pad directly selects equipment using the game's existing directional
-weapon/item slots, without holding B. D-pad menu/dialog navigation and all other buttons remain
-unchanged. The right stick is inactive in menus. Keyboard mappings are unchanged, including the
-original Circle + arrows selection.
+weapon/item slots, without holding B. LT aims / enters first person; left stick still moves and
+right stick aims there. RT or physical Xbox X fires/punches, and B or RB opens the weapon menu.
+D-pad menu/dialog navigation is unchanged, and the right stick is inactive in menus. Keyboard
+mappings are unchanged, including the original Circle + arrows selection.
 
 Use `--controls legacy` to restore the original XInput mapping (D-pad camera, B + D-pad equipment,
 right stick unused), or `--controls modern` to select the default explicitly. Through the launcher:
