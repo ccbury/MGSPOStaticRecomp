@@ -100,10 +100,59 @@ int wmain() {
     string firstStamp = buildStamp(c);
     c.source = otherSource;
     check(firstStamp != buildStamp(c), "build stamp must include source checkout");
+    check(sourceRevision(c) == "unversioned", "source archives must remain supported for CLI builds");
+    auto args = gameArguments(c);
+    check(args.back() == L"modern", "default control profile must be modern");
+    c.config.set("controls", "legacy");
+    check(gameArguments(c).back() == L"legacy", "remembered control profile must be used");
+    c.opt.controls = "modern";
+    check(gameArguments(c).back() == L"modern", "explicit profile must override config");
+    c.opt.gameArgs = {L"--controls", L"legacy"};
+    check(gameArguments(c).back() == L"legacy", "raw game arguments must remain compatible");
+    c.opt.controls = "invalid";
+    bool invalid = false;
+    try { gameArguments(c); } catch (const Fatal&) { invalid = true; }
+    check(invalid, "invalid profiles must fail explicitly");
+    c.config.file = fixture.root / L"settings with spaces" / L"launcher.ini";
+    c.config.set("custom", "preserved");
+    c.config.save();
+    Ini loaded;
+    loaded.load(c.config.file);
+    check(loaded.get("controls") == "legacy" && loaded.get("custom") == "preserved",
+          "settings must round trip with custom keys");
+    HANDLE settings = CreateFileW(c.config.file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                  OPEN_EXISTING, 0, nullptr);
+    check(settings != INVALID_HANDLE_VALUE, "cannot lock fixture settings");
+    c.config.set("custom", "should not replace");
+    bool locked = false;
+    try { c.config.save(); } catch (const Fatal&) { locked = true; }
+    CloseHandle(settings);
+    check(locked, "locked settings must report failure");
+    loaded.load(c.config.file);
+    check(loaded.get("custom") == "preserved", "failed settings write must preserve original");
+    wchar_t a0[] = L"launcher", a1[] = L"--controls", a2[] = L"legacy", a3[] = L"--config",
+            a4[] = L"C:\\folder with spaces\\settings.ini", a5[] = L"game image.iso";
+    wchar_t* command[] = {a0, a1, a2, a3, a4, a5};
+    Options parsed;
+    check(parse(6, command, parsed) && parsed.controls == "legacy" && parsed.configPath == a4 && parsed.iso == a5,
+          "config/profile/ISO arguments must parse without losing spaces");
     if (GetEnvironmentVariableW(L"MGSPO_TEST_TOOLCHAIN", nullptr, 0) > 0) {
       setupToolchain();
       check(haveX64Toolchain(), "toolchain setup must select x64");
     }
+    // Redirect even the default config into the disposable fixture before testing clean.
+    SetEnvironmentVariableW(L"LOCALAPPDATA", (fixture.root / L"fake app data").c_str());
+    Ini defaults;
+    defaults.file = configFile();
+    defaults.set("keep", "yes");
+    defaults.save();
+    c.boot = c.work / L"boot";
+    c.logs = c.work / L"logs";
+    c.state.file = c.work / L"state.ini";
+    c.opt.all = true;
+    cmdClean(c);
+    check(!fs::exists(c.config.file), "clean --all must remove the selected alternate config");
+    check(fs::exists(defaults.file), "clean with alternate config must not remove default settings");
     std::puts("Launcher cache regression tests passed.");
     return 0;
   } catch (const Fatal& error) {

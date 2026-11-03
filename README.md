@@ -49,6 +49,67 @@ default stage list, builds `mgspo-game` and starts it. The ISO path is remembere
 straight away. If the game loads a stage that was not lifted, the launcher spots the `not lifted`
 line in the game log, adds the stage, re-lifts, rebuilds and restarts.
 
+### Desktop launcher (Windows)
+
+Build `cmake --build build --target mgspo-desktop --parallel 1`, then double-click
+`build\mgspo-desktop.exe`. This native Windows UI needs no console or additional UI framework.
+Browse for your ISO, choose **Modern gamepad** or **Legacy PSP mapping**, and choose **Build / setup ISO**
+or **Launch game**. Launch reuses the CLI's extract/lift/build pipeline and validates cached outputs
+before starting. The first build can take a long time. Install Visual Studio 2022 / Build Tools with
+**Desktop development with C++**, including CMake and Ninja; missing-tool errors explain what to install.
+The UI does not install dependencies.
+
+ISO and control settings are remembered in `%LOCALAPPDATA%\MGSPO\launcher.ini`; existing custom keys
+are kept. Work, saves and full operation logs are under `%LOCALAPPDATA%\MGSPO\work` by default.
+For a separate installation use `mgspo-desktop --config "D:\MGSPO\launcher.ini" --work "D:\MGSPO\work"
+--source "D:\src\MGSPOStaticRecomp"` (on one command line). The CLI also accepts `--config` and
+`--controls modern|legacy`; trailing `-- game args` remain supported. Keyboard bindings are unchanged.
+Desktop launches conservatively use two renderer workers.
+
+Build/game/update operations run in the background with a bounded live log. Controls are locked while
+busy, and a work-directory lock prevents other launchers using that same directory concurrently.
+**Cancel**, or closing while busy, explicitly asks before stopping only the operation's process tree;
+unfinished steps are rebuilt on the next attempt. Saves are never removed by UI build/update actions.
+Do not run manually started games/builds against the same work directory at the same time.
+
+**Check updates** explicitly fetches `origin`'s `main`, shows both full revisions and compares ancestry.
+Git for Windows and your existing Git/GitHub authentication are required; offline/authentication
+failures are shown, and credentials are neither read nor stored by the UI. There is no startup network
+check, automatic install, remote-script execution, or game-derived download.
+Updates support only the official `ccbury/MGSPOStaticRecomp` GitHub origin and a clean, standalone
+clone on `main`. Linked worktrees, archives, feature branches, local/untracked edits, unfinished Git
+operations, ahead/divergent history and junction/symlink locations are refused. The UI never stashes,
+resets, force-updates or edits the original source checkout; fetch changes only its Git metadata.
+
+After review, **Update / rebuild** asks for confirmation, fetches/rechecks the exact revisions again,
+then creates or fast-forwards a launcher-owned clone in `work\updates\source`. Tools/UI are built in
+a new version directory, followed by a game rebuild using the new CLI, with `--parallel 1`.
+Revision-based cache stamps invalidate old generated/game output; managed sources cannot be run with
+tools compiled for a different revision. The running executables are not replaced. Only after both
+builds succeed are settings switched to the new source/UI and **Restart UI** enabled. Later starts of
+the original desktop executable forward to that explicitly activated local UI.
+
+On failure the original launcher files, saves and settings remain, but the managed source and build
+caches may already have advanced: this is **not transactional source rollback**. Use **Check updates**
+then **Update / rebuild** to retry, even when source already matches main. Local edits in the managed
+clone are also refused and preserved. Failed/older tool directories are kept for inspection, not
+silently deleted. Keep build paths reasonably short for the Windows compiler. Updates compile locally
+from your own ISO and never distribute game content.
+
+Launcher regression checks build no generated game code:
+
+```
+cmake --build build --target mgspo-launcher-tests mgspo-launcher-update-tests --parallel 1
+ctest --test-dir build -R mgspo-launcher --parallel 1 --output-on-failure
+```
+
+Updater tests use disposable local Git remotes, including successful staged tools/game-build
+fixtures and deliberate build failures; the fixture game is a tiny test program, not the actual game.
+For scripted native-window checks on an interactive Windows desktop, run
+`powershell -File tests\test_desktop_ui.ps1 -Binary build\mgspo-desktop.exe -OutputDirectory build\ui-check`.
+This checks settings, errors, unsupported-source refusal and close/reopen, retaining a UI-only
+screenshot in the output directory; it does not play or rebuild the game.
+
 Moving to a different source checkout, or finding a cached x86 compiler, automatically resets the
 CMake configuration in the work directory before building. Extracted disc files and saves are kept.
 The launcher builds with one compiler job to bound memory use. Ninja also serializes compilation
