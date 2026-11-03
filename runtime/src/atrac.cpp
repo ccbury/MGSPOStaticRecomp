@@ -16,6 +16,7 @@ constexpr uint32_t E_ATRAC_NO_ID = 0x80630003;
 constexpr uint32_t E_ATRAC_INVALID_SIZE = 0x80630004;
 constexpr uint32_t E_ATRAC_BAD_ID = 0x80630005;
 constexpr uint32_t E_ATRAC_UNKNOWN_FORMAT = 0x80630006;
+constexpr uint32_t E_ATRAC_NO_LOOP_INFORMATION = 0x80630021;
 constexpr uint32_t E_ATRAC_ALL_DATA_DECODED = 0x80630024;
 constexpr int kMaxIds = 6;
 constexpr int kPlusFrameSamples = 2048;
@@ -167,6 +168,7 @@ void h_reset_position(Cpu& c) {
 void h_set_loop_num(Cpu& c) {
   Context* x = find(c, static_cast<int>(arg(c, 0)));
   if (!x) return;
+  if (!x->info.hasLoop) return ret(c, E_ATRAC_NO_LOOP_INFORMATION);
   x->loopNum = static_cast<int32_t>(arg(c, 1));
   ret(c, 0);
 }

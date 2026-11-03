@@ -129,6 +129,12 @@ static const ImportEntry kImports[] = {
     {0x08800008, "sceSasCore", 0xA3589D81},
     {0x08800010, "sceSasCore", 0x68A46B95},
     {0x08800018, "sceAtrac3plus", 0x132F1ECA},
+    {0x08800020, "sceAtrac3plus", 0x7A20E7AF},
+    {0x08800028, "sceAtrac3plus", 0x868120B5},
+    {0x08800030, "sceAtrac3plus", 0xFAA4F89B},
+    {0x08800038, "sceAtrac3plus", 0x6A8C3CD5},
+    {0x08800040, "sceAtrac3plus", 0x644E5607},
+    {0x08800048, "sceAtrac3plus", 0x61EB33F5},
 };
 
 static uint32_t call(int idx, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0, uint32_t t0 = 0) {
@@ -146,6 +152,93 @@ static void test_hle() {
   CHECK(call(2, core) == 0xFFu);
   CHECK(call(1, 0x08A30000, out) != 0);  // unknown core
   CHECK(call(3, 1, 1) == 0);
+}
+
+static std::vector<uint8_t> silent_at3(bool loop) {
+  std::vector<uint8_t> f;
+  auto p32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) f.push_back(uint8_t(v >> (8 * i))); };
+  auto p16 = [&](uint16_t v) { f.push_back(uint8_t(v)); f.push_back(uint8_t(v >> 8)); };
+  f.insert(f.end(), {'R', 'I', 'F', 'F'});
+  p32(0);
+  f.insert(f.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
+  p32(16);
+  p16(0xFFFE); p16(2); p32(44100); p32(0); p16(16); p16(0);
+  f.insert(f.end(), {'f', 'a', 'c', 't'});
+  p32(4); p32(2051);
+  if (loop) {
+    f.insert(f.end(), {'s', 'm', 'p', 'l'});
+    p32(60);
+    for (int i = 0; i < 7; ++i) p32(0);
+    p32(1); p32(0);
+    p32(0); p32(0); p32(3); p32(1023); p32(0); p32(0);
+  }
+  f.insert(f.end(), {'d', 'a', 't', 'a'});
+  p32(32);
+  size_t data = f.size();
+  f.resize(data + 32, 0);
+  f[data] = f[data + 16] = 0x60;  // terminator-only ATRAC3+ frames
+  uint32_t size = static_cast<uint32_t>(f.size() - 8);
+  for (int i = 0; i < 4; ++i) f[4 + i] = uint8_t(size >> (i * 8));
+  return f;
+}
+
+static void test_atrac_loop_hle() {
+  const uint32_t status = kBuf + 0x1000, out = kBuf + 0x2000;
+  auto create = [&](bool loop) {
+    auto f = silent_at3(loop);
+    mem_write(kBuf, f.data(), f.size());
+    uint32_t id = call(4, kBuf, static_cast<uint32_t>(f.size()));
+    CHECK(id < 6);
+    return id;
+  };
+  auto check_loop = [&](uint32_t id, uint32_t count, uint32_t hasLoop) {
+    sw(status, 0xDEADBEEF);
+    sw(status + 4, 0xDEADBEEF);
+    CHECK(call(6, id, status, status + 4) == 0);
+    CHECK(lw(status) == count && lw(status + 4) == hasLoop);
+  };
+  auto decode = [&](uint32_t id, uint32_t samples, uint32_t finish, uint32_t result = 0) {
+    sw(status, 0xDEADBEEF);
+    sw(status + 4, 0xDEADBEEF);
+    CHECK(call(7, id, out, status, status + 4, status + 8) == result);
+    CHECK(lw(status) == samples && lw(status + 4) == finish);
+    CHECK(lw(status + 8) == UINT32_MAX);
+  };
+
+  uint32_t id = create(false);
+  check_loop(id, 0, 0);
+  for (uint32_t count : {UINT32_MAX, 0u, 2u}) {
+    CHECK(call(5, id, count) == 0x80630021u);
+    check_loop(id, 0, 0);
+  }
+  decode(id, 2048, 0);
+  decode(id, 3, 1);
+  decode(id, 0, 1, 0x80630024u);
+  check_loop(id, 0, 0);
+  CHECK(call(8, id, 0) == 0);
+  check_loop(id, 0, 0);
+  decode(id, 2048, 0);
+  CHECK(call(9, id) == 0);
+
+  id = create(true);
+  check_loop(id, 0, 1);
+  CHECK(call(5, id, 1) == 0);
+  check_loop(id, 1, 1);
+  decode(id, 1024, 0);
+  check_loop(id, 0, 1);
+  decode(id, 2045, 0);
+  decode(id, 3, 1);
+  CHECK(call(8, id, 0) == 0);
+  CHECK(call(5, id, UINT32_MAX) == 0);
+  decode(id, 1024, 0);
+  check_loop(id, UINT32_MAX, 1);
+  decode(id, 1021, 0);
+  check_loop(id, UINT32_MAX, 1);
+  CHECK(call(5, id, 0) == 0);
+  check_loop(id, 0, 1);
+  decode(id, 2045, 0);
+  decode(id, 3, 1);
+  CHECK(call(9, id) == 0);
 }
 
 static void test_atrac3plus() {
@@ -228,7 +321,7 @@ int main() {
   cfg.headless = true;
   kernel_init(cfg, 0x08900000, 0);
   register_all_hle();
-  bind_tables(nullptr, 0, kImports, 4);
+  bind_tables(nullptr, 0, kImports, sizeof(kImports) / sizeof(kImports[0]));
 
   test_vag();
   test_envelope();
@@ -237,6 +330,7 @@ int main() {
   test_atrac_parse();
   test_atrac3plus();
   test_hle();
+  test_atrac_loop_hle();
 
   if (g_failures) {
     std::printf("%d failure(s)\n", g_failures);
