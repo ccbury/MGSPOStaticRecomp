@@ -47,7 +47,18 @@ struct Ctx {
   size_t unimpl = 0;
   bool overlay = false;
   bool modernControls = false;
+  bool promptIcons = false;
 };
+
+bool supportsPromptIcons(const PrxImage& img) {
+  const std::pair<uint32_t, uint32_t> signatures[] = {
+      {0x0884C0F8, 0x27BDFFD0}, {0x0884C330, 0x8E621C48},
+      {0x0884C334, 0x50500009}, {0x0884C350, 0x02004021},
+      {0x0884C438, 0x8E621C48}, {0x0884C43C, 0x1050FFC6}};
+  for (const auto& signature : signatures)
+    if (!img.contains(signature.first) || img.word(signature.first) != signature.second) return false;
+  return true;
+}
 
 bool supportsModernControls(const PrxImage& img) {
   const std::pair<uint32_t, uint32_t> signatures[] = {
@@ -222,6 +233,7 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
   Ctx cx{prog, fn};
   cx.overlay = overlay;
   cx.modernControls = !overlay && supportsModernControls(img);
+  cx.promptIcons = !overlay && supportsPromptIcons(img);
 
   auto inFn = [&](uint32_t a) { return a >= fn.start && a < fn.end; };
 
@@ -260,6 +272,8 @@ std::string emitFunction(const Program& prog, const Function& fn, size_t* unimpl
     bool labelled = labels.count(pc) != 0;
     if (skip.count(pc) && !labelled) continue;
     if (labelled) out += label(pc) + ":;\n";
+    if (cx.promptIcons && (pc == 0x0884C330 || pc == 0x0884C438))
+      out += "  c.r[16] = psp::prompts_texture(c.r[17], c.r[16]);\n";
     Insn i = decode(img.word(pc), pc);
 
     if (!hasDelaySlot(i.op)) {
@@ -492,6 +506,7 @@ EmitResult emitAll(const std::vector<ModuleUnit>& units, const EmitOptions& opts
       "extern const psp::ImportEntry kImports[];\nextern const size_t kImportCount;\n"
       "extern const psp::ModuleDesc kModules[];\nextern const size_t kModuleCount;\n"
       "constexpr bool kModernControlsSupported = " + std::string(supportsModernControls(mainImg) ? "true" : "false") + ";\n"
+      "#define MGSPO_PROMPT_ICONS_SUPPORTED " + std::string(supportsPromptIcons(mainImg) ? "1" : "0") + "\n"
       "constexpr uint32_t kModuleBase = " + hex32(mainImg.base) + ";\n"
       "constexpr uint32_t kOverlayBase = " + hex32(ovBase) + ";\n"
       "constexpr uint32_t kOverlayEnd = " + hex32(ovEnd) + ";\n"

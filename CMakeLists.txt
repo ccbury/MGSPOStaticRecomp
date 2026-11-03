@@ -89,6 +89,7 @@ add_library(mgspo_rt STATIC
   runtime/src/io.cpp
   runtime/src/display.cpp
   runtime/src/game_controls.cpp
+  runtime/src/game_prompts.cpp
   runtime/src/ge.cpp
   runtime/src/gpu.cpp
   runtime/src/gpu_draw.cpp

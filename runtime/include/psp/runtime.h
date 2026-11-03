@@ -7,6 +7,7 @@
 #include "memory.h"
 #include "ops.h"
 #include "game_controls.h"
+#include "game_prompts.h"
 
 namespace psp {
 

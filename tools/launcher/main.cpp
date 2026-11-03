@@ -278,6 +278,7 @@ struct Options {
   wstring source;
   wstring configPath;
   string controls;
+  string prompts;
   std::vector<wstring> gameArgs;
   bool noRelaunch = false;
   bool saves = false;
@@ -763,6 +764,10 @@ std::vector<wstring> gameArguments(const Ctx& c) {
   if (controls.empty()) controls = "modern";
   if (controls != "modern" && controls != "legacy") die(L"Controls must be modern or legacy.");
   args.insert(args.end(), {L"--controls", toWide(controls)});
+  string prompts = c.opt.prompts.empty() ? c.config.get("prompts") : c.opt.prompts;
+  if (prompts.empty()) prompts = "original";
+  if (prompts != "original" && prompts != "modern") die(L"Prompts must be original or modern.");
+  args.insert(args.end(), {L"--prompts", toWide(prompts)});
   for (auto& a : c.opt.gameArgs) args.push_back(a);
   return args;
 }
@@ -903,6 +908,7 @@ void usage() {
       L"  --source <dir>    project source tree (normally detected)\n"
       L"  --config <file>   alternate settings file\n"
       L"  --controls <modern|legacy>  input style (otherwise remembered setting)\n"
+      L"  --prompts <original|modern> controller icons (original by default; identified menus only)\n"
       L"  --no-relaunch     do not rebuild and restart when the game needs another stage\n"
       L"  --saves / --all   extra things for clean\n"
       L"  -- <args>         everything after -- is passed to mgspo-game (for example --headless --timeout 60)\n"
@@ -925,6 +931,10 @@ bool parse(int argc, wchar_t** argv, Options& o) {
     else if (a == L"--controls" && more) {
       o.controls = toUtf8(argv[++i]);
       if (o.controls != "modern" && o.controls != "legacy") { warn(L"Controls must be modern or legacy."); return false; }
+    }
+    else if (a == L"--prompts" && more) {
+      o.prompts = toUtf8(argv[++i]);
+      if (o.prompts != "original" && o.prompts != "modern") { warn(L"Prompts must be original or modern."); return false; }
     }
     else if (a == L"--no-relaunch") o.noRelaunch = true;
     else if (a == L"--saves") o.saves = true;

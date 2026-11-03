@@ -59,11 +59,17 @@ before starting. The first build can take a long time. Install Visual Studio 202
 **Desktop development with C++**, including CMake and Ninja; missing-tool errors explain what to install.
 The UI does not install dependencies.
 
-ISO and control settings are remembered in `%LOCALAPPDATA%\MGSPO\launcher.ini`; existing custom keys
+The **Icons** selector defaults to **Original PSP**. **Modern Xbox-style (menu X/Y)** currently
+replaces positively identified title/pause menu Triangle and Square prompts with original-authored
+Y and X artwork. Other symbols remain original; this is not yet a full-game Xbox prompt set.
+Save settings and relaunch the game to change modes. See [prompt coverage](docs/controls.md#controller-icons).
+
+ISO, control and icon settings are remembered in `%LOCALAPPDATA%\MGSPO\launcher.ini`; existing custom keys
 are kept. Work, saves and full operation logs are under `%LOCALAPPDATA%\MGSPO\work` by default.
 For a separate installation use `mgspo-desktop --config "D:\MGSPO\launcher.ini" --work "D:\MGSPO\work"
 --source "D:\src\MGSPOStaticRecomp"` (on one command line). The CLI also accepts `--config` and
-`--controls modern|legacy`; trailing `-- game args` remain supported. Keyboard bindings are unchanged.
+`--controls modern|legacy` and `--prompts original|modern`; trailing `-- game args` remain supported.
+Keyboard bindings are unchanged.
 Desktop launches conservatively use two renderer workers.
 
 Build/game/update operations run in the background with a bounded live log. Controls are locked while

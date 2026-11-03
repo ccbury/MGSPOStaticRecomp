@@ -76,6 +76,7 @@ void fixtures(bool rebuild) {
   c.opt.controls = "legacy";
   c.config.file = fixture.root / L"settings with spaces" / L"launcher.ini";
   c.config.set("custom", "kept");
+  c.config.set("prompts", "modern");
   c.config.save();
   write(c.work / L"save" / L"sentinel", "save must survive");
   fs::create_directories(seed);
@@ -93,6 +94,10 @@ int wmain(int argc, wchar_t** argv) {
 #ifdef FAIL_GAME
   return 9;
 #else
+  bool modernPrompts = false;
+  for (int i=1;i+1<argc;++i)
+    if (std::wstring(argv[i]) == L"--prompts") modernPrompts = std::wstring(argv[i+1]) == L"modern";
+  if (!modernPrompts) return 8;
   for (int i=1;i+1<argc;++i) if (std::wstring(argv[i]) == L"--work") {
     std::filesystem::path work(argv[i+1]);
     HANDLE lock = CreateFileW((work / L".launcher-operation").c_str(), GENERIC_WRITE, 0,
@@ -161,6 +166,7 @@ int wmain(int argc, wchar_t** argv) {
     check(fs::exists(c.work / L"fixture-game-built"), "new CLI must complete fixture game build");
     check(c.config.get("source_revision") == next.available, "settings activate only after full success");
     check(c.config.get("custom") == "kept", "custom settings must survive");
+    check(c.config.get("prompts") == "modern", "icon selection must survive update activation");
     check(activatedDesktop(c) == tools / L"mgspo-desktop.exe", "activation must select new staged UI");
     string desktop = c.config.get("desktop");
     c.config.set("desktop", toUtf8((fixture.root / L"mgspo-desktop.exe").wstring()));

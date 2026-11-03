@@ -1,5 +1,36 @@
 # Gamepad controls
 
+## Controller icons
+
+The desktop launcher's **Icons** selector, or `--prompts original|modern` in the
+launcher/runtime CLI, selects the controller artwork independently of control style.
+The default is `original`; it bypasses substitution and allocates no replacement art.
+The desktop remembers `prompts=original` or `prompts=modern` in `launcher.ini`, including
+across update/restart. Save settings and relaunch the game; live texture changes are not supported.
+
+**Current coverage is limited to identified menu resources:** Triangle becomes Y and
+Square becomes X in the supported US title/pause menu resource packs. The artwork is
+an original generic circular button with a small letter, not Steam artwork or extracted
+game pixels. Both modern and legacy profiles use these physical menu-button labels.
+Keyboard controls and D-pad navigation are unchanged.
+
+Circle/Cross, shoulder/trigger, stick, tutorial, codec and owned-weapon action prompts
+are **not yet replaced**. In particular, Square in an unidentified gameplay prompt must
+not automatically become X: modern firing's primary alias is RT, first person is LT,
+and equipment uses B or RB. Unknown resources keep their original art rather than
+mislabeling an action. This option is not a full-game Xbox prompt set.
+
+The lifter signature-checks the native sprite-binding/cache instructions. The runtime
+matches pack **and** sprite identity, dimensions, format and layout, not screen coordinates,
+dynamic texture addresses or shape hashes. Replacement tiles use immutable, bounded
+128 KiB guest storage and the native palette. The native texture-binding cache records
+the replacement address; original data is never rewritten, and queued draw/cache snapshots
+remain valid. Unknown layouts are left original; unsupported palettes report a warning.
+Modern mode refuses an old/unsupported lift explicitly; rebuild generated output with the
+updated lifter. No game-derived artwork or generated game code is distributed.
+
+## Input mapping
+
 The default `--controls modern` layout uses these XInput controls (button names are physical Xbox
 buttons, not keyboard keys):
 

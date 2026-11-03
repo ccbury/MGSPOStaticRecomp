@@ -21,6 +21,10 @@
 #include "tables.h"
 #include "funcs.h"
 
+#ifndef MGSPO_PROMPT_ICONS_SUPPORTED
+#define MGSPO_PROMPT_ICONS_SUPPORTED 0
+#endif
+
 static void usage(const char* prog);
 
 namespace psp { namespace k { void display_set_dump_path(const std::string& p); void display_set_auto_buttons(uint32_t mask); void display_set_press_script(const std::string& s); void display_set_profile(bool on); } }
@@ -36,6 +40,7 @@ static void usage(const char* prog) {
                "  --headless  no window or audio\n"
                "  --controls <modern|legacy>  modern gamepad camera/weapons (default) or original PSP mapping\n"
                "  --controls-trace  log native direct equipment selections\n"
+               "  --prompts <original|modern>  controller icons (default original; identified menus only)\n"
                "  --gamepad-press <script>  time:PSP-mask[:hold[:rx:ry[:lx:ly]]] (up = negative Y)\n"
                "  --trace   log every import call\n"
                "  --report  write the list of imports that were called to a file\n"
@@ -71,6 +76,7 @@ int main(int argc, char** argv) {
   std::string module, reportPath;
   int timeoutSec = 0;
   bool modernControls = true, controlsTrace = false;
+  bool modernPrompts = false;
   psp::KernelConfig cfg;
   psp::GeDebugOptions geOpt;
   for (int i = 1; i < argc; ++i) {
@@ -86,6 +92,14 @@ int main(int argc, char** argv) {
       modernControls = mode == "modern";
     }
     else if (a == "--controls-trace") controlsTrace = true;
+    else if (a == "--prompts" && more) {
+      std::string mode = argv[++i];
+      if (mode != "original" && mode != "modern") {
+        std::fprintf(stderr, "invalid prompts mode: %s (expected original or modern)\n", mode.c_str());
+        return 2;
+      }
+      modernPrompts = mode == "modern";
+    }
     else if (a == "--save" && more) cfg.saveRoot = argv[++i];
     else if (a == "--iso" && more) cfg.discImage = argv[++i];
     else if (a == "--modules" && more) cfg.moduleDir = argv[++i];
@@ -155,6 +169,9 @@ int main(int argc, char** argv) {
 
     psp::ov_init(kOverlayBase, kOverlayEnd);
     psp::kernel_init(cfg, heap, kModuleGp + kModuleBase);
+    if (modernPrompts && !MGSPO_PROMPT_ICONS_SUPPORTED)
+      throw std::runtime_error("modern prompts require a supported ULUS10202 lift; rebuild or use --prompts original");
+    psp::prompts_init(modernPrompts);
     psp::kernel_bind_modules(kModules, kModuleCount);
     psp::register_all_hle();
     psp::bind_tables(kFuncs, kFuncCount, kImports, kImportCount);
