@@ -1025,11 +1025,9 @@ struct Raster {
       if (vt.tc) {
         out.u = rv.uv[0];
         out.v = rv.uv[1];
-        // integer coordinates are texels, normalise them; float ones are already 0..1
-        if (vt.tc != 3) {
-          out.u /= static_cast<float>(tW);
-          out.v /= static_cast<float>(tH);
-        }
+        // through mode coordinates are always texels, whatever the vertex format
+        out.u /= static_cast<float>(tW);
+        out.v /= static_cast<float>(tH);
       }
       if (hasCol) for (int i = 0; i < 4; ++i) out.col[i] = rv.col[i];
       else {
@@ -1259,6 +1257,11 @@ void Gpu::draw_prim(uint32_t arg) {
   } catch (const std::runtime_error&) {
     return;  // vertex data outside of emulated memory
   }
+  if (dump_ && std::getenv("MGSPO_VDUMP"))
+    for (uint32_t i = 0; i < count && i < 8; ++i)
+      std::fprintf(dump_, "    v%u pos %.1f %.1f %.1f uv %.4f %.4f col %.2f %.2f %.2f %.2f\n", i, verts[i].clip[0],
+                   verts[i].clip[1], verts[i].clip[2], verts[i].u, verts[i].v, verts[i].col[0], verts[i].col[1],
+                   verts[i].col[2], verts[i].col[3]);
   auto t0 = std::chrono::steady_clock::now();
   R.assemble(vt, verts, prim);
   if (stats_) {

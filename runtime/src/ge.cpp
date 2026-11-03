@@ -148,7 +148,11 @@ int enqueue(uint32_t listAddr, uint32_t stall, int cbid) {
   l.ctx.stall = stall;
   l.cbid = cbid;
   if (g_statsOn) g_stats.lists++;
-  if (g_dump) std::fprintf(g_dump, "# list %d at %08X stall %08X\n", id, listAddr, stall);
+  // MGSPO_GE_DUMP_FROM=<n> only starts writing the dump at the n-th list, so late scenes are reachable
+  static const uint64_t dumpFrom = std::getenv("MGSPO_GE_DUMP_FROM") ? std::strtoull(std::getenv("MGSPO_GE_DUMP_FROM"), nullptr, 0) : 0;
+  static uint64_t listNo = 0;
+  g_gpu.set_dump(++listNo >= dumpFrom ? g_dump : nullptr);
+  if (g_dump && listNo >= dumpFrom) std::fprintf(g_dump,  "# list %d at %08X stall %08X\n", id, listAddr, stall);
   run_list(l);
   return id;
 }

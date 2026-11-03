@@ -37,8 +37,18 @@ block transfers.
 ## Debugging
 
 - `--ge-dump <file>` (or `MGSPO_GE_DUMP`) writes every executed command with its address.
+  `MGSPO_GE_DUMP_FROM=<n>` skips the dump until the n-th enqueued list, which keeps the file small
+  when the interesting frame is far into a run. `MGSPO_VDUMP=1` additionally prints the first eight
+  transformed vertices (position, uv, colour) after each `PRIM`.
 - `--ge-stats` (or `MGSPO_GE_STATS=1`) prints list/draw/primitive counts, vertex types, texture and
   framebuffer formats and per-command counts when the run ends.
+
+## Through-mode uv
+
+In through mode the uv are texel coordinates whatever the vertex format, float included. The first
+version only normalised the integer formats, which made every float-uv through draw (the game's comic
+panels are drawn as 150 px strips with uv 0.5..149.5) sample a single clamped texel. Symptom: full-height
+flat colour columns with the subtitles still correct on top. Normal (non-through) float uv are 0..1.
 
 ## Tests
 
