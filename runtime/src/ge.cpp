@@ -41,6 +41,8 @@ void ge_write_stats(std::FILE* out) {
                (unsigned long long)s.clears, (unsigned long long)s.throughDraws, (unsigned long long)s.texturedDraws,
                (unsigned long long)s.lightedDraws, (unsigned long long)s.blendedDraws,
                (unsigned long long)s.skinnedDraws);
+  std::fprintf(out, "  raster ms: clear %.0f, flat %.0f, textured %.0f, textured+blend %.0f; fragments %llu\n", s.catNs[0] / 1e6,
+               s.catNs[1] / 1e6, s.catNs[2] / 1e6, s.catNs[3] / 1e6, (unsigned long long)s.fragments);
   std::fprintf(out, "  block transfers %llu (%llu bytes), CLUT loads %llu\n", (unsigned long long)s.transforms,
                (unsigned long long)s.transformBytes, (unsigned long long)s.clutLoads);
   for (const auto& kv : s.fbFormats)
@@ -104,7 +106,14 @@ void run_list(List& l) {
     host.cb = it->second;
     host.have = true;
   }
-  switch (g_gpu.run(l.ctx, &host)) {
+  ProfileCounters& pf = profile();
+  uint64_t t0 = pf.enabled ? now_us() : 0;
+  ge::Stop stop = g_gpu.run(l.ctx, &host);
+  if (pf.enabled) {
+    pf.geUs += now_us() - t0;
+    ++pf.geLists;
+  }
+  switch (stop) {
     case ge::Stop::Stalled: l.state = kStalling; break;
     case ge::Stop::Paused: l.state = kPaused; break;
     case ge::Stop::Ended: l.state = kCompleted; break;

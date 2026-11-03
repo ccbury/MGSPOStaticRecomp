@@ -21,7 +21,7 @@
 
 static void usage(const char* prog);
 
-namespace psp { namespace k { void display_set_dump_path(const std::string& p); void display_set_auto_buttons(uint32_t mask); void display_set_press_script(const std::string& s); } }
+namespace psp { namespace k { void display_set_dump_path(const std::string& p); void display_set_auto_buttons(uint32_t mask); void display_set_press_script(const std::string& s); void display_set_profile(bool on); } }
 
 static void usage(const char* prog) {
   std::fprintf(stderr,
@@ -37,7 +37,8 @@ static void usage(const char* prog) {
                "  --ge-stats print GE command/draw statistics when the run ends\n"
                "  --fault-dump <addr> <len>  hex dump this guest memory range in fault reports\n"
                "  --watch <addr> <len>  log guest stores to a range (build with -DMGSPO_WATCH=ON)\n"
-               "  --press <sec:mask,...>  scripted one-shot button presses at the given run times (seconds)\n"
+               "  --profile  print frame rate, GE and present times every 5 seconds\n"
+"  --press <sec:mask,...>  scripted presses: time:mask[:hold[:lx:ly]] with time/hold in game seconds, stick -128..127\n"
                "  --dump-frame <png>  keep writing the displayed frame to this PNG (local debugging aid)\n"
                "  --auto-press <mask>  periodically press these PSP buttons (e.g. 0x8 = Start) for unattended runs\n"
                "  --timeout stop after this many seconds (and write the report)\n",
@@ -85,7 +86,8 @@ int main(int argc, char** argv) {
     else if (a == "--ge-dump" && more) geOpt.dumpPath = argv[++i];
     else if (a == "--ge-stats") geOpt.stats = true;
     else if (a == "--auto-press" && more) psp::k::display_set_auto_buttons(static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)));
-    else if (a == "--press" && more) psp::k::display_set_press_script(argv[++i]);
+  else if (a == "--profile") psp::k::display_set_profile(true);
+  else if (a == "--press" && more) psp::k::display_set_press_script(argv[++i]);
     else if (a == "--dump-frame" && more) psp::k::display_set_dump_path(argv[++i]);
     else if (module.empty() && a[0] != '-') module = a;
     else {

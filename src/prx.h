@@ -39,6 +39,11 @@ struct PrxImage {
   std::vector<ExportedFunc> exports;     // every exported function with its library and NID
   std::set<uint32_t> addressTaken;       // code addresses produced by relocations
   std::set<uint32_t> jumpTargets;        // subset of addressTaken that looks like switch-table entries
+  struct JumpTable {
+    uint32_t start = 0, end = 0;  // data address range of the pointer run
+    std::vector<uint32_t> targets;
+  };
+  std::vector<JumpTable> jumpTables;     // pointer runs that were taken as switch tables
   uint32_t unknownRelocs = 0;
 
   bool contains(uint32_t addr, uint32_t len = 4) const {

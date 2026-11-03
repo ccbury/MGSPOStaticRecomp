@@ -131,10 +131,13 @@ PrxImage loadPrx(const Bytes& elf, uint32_t base) {
     auto runStart = it;
     uint32_t lo = it->second, hi = it->second, prev = it->first;
     size_t n = 1;
+    // Tables sit next to other pointer arrays; start a new run once the targets stop being local.
     for (++it; it != ptrSites.end() && it->first == prev + 4; ++it) {
+      uint32_t nlo = std::min(lo, it->second), nhi = std::max(hi, it->second);
+      if (nhi - nlo >= 0x2000) break;
       prev = it->first;
-      lo = std::min(lo, it->second);
-      hi = std::max(hi, it->second);
+      lo = nlo;
+      hi = nhi;
       ++n;
     }
     if (n >= 2 && hi - lo < 0x2000) {
@@ -149,8 +152,15 @@ PrxImage loadPrx(const Bytes& elf, uint32_t base) {
         }
         return p >= base + 8 && (rd(p - 4) == kJrRa || rd(p - 8) == kJrRa);
       };
-      for (auto j = runStart; j != it; ++j)
-        if (!afterReturn(j->second)) img.jumpTargets.insert(j->second);
+      PrxImage::JumpTable jt;
+      jt.start = runStart->first;
+      jt.end = prev + 4;
+      for (auto j = runStart; j != it; ++j) {
+        if (afterReturn(j->second)) continue;
+        img.jumpTargets.insert(j->second);
+        jt.targets.push_back(j->second);
+      }
+      if (!jt.targets.empty()) img.jumpTables.push_back(std::move(jt));
     }
   }
 

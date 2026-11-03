@@ -88,9 +88,34 @@ void write_png(const std::string& path, const uint32_t* argb, int w, int h) {
   }
 }
 
+void present_frame_impl();
+
 void present_frame() {
   if (g_lastPresented == g_vcount) return;
   g_lastPresented = g_vcount;
+  ProfileCounters& pf = profile();
+  uint64_t t0 = pf.enabled ? now_us() : 0;
+  present_frame_impl();
+  if (pf.enabled) {
+    uint64_t t1 = now_us();
+    pf.presentUs += t1 - t0;
+    ++pf.presents;
+    static uint64_t s_last = 0, s_ge = 0, s_pr = 0, s_pc = 0, s_fl = 0, s_sk = 0, s_gl = 0;
+    if (t1 - s_last >= 5000000) {
+      double win = static_cast<double>(t1 - s_last);
+      if (s_last)
+        std::fprintf(stderr,
+                     "[prof] %.1f flips/s, %.1f presents/s, skipped vblanks %llu, GE %.1f ms/s over %llu lists, present %.1f ms/s (%.2f ms each)\n",
+                     (pf.flips - s_fl) * 1e6 / win, (pf.presents - s_pc) * 1e6 / win,
+                     (unsigned long long)(pf.skipped - s_sk), (pf.geUs - s_ge) * 1000.0 / win,
+                     (unsigned long long)(pf.geLists - s_gl), (pf.presentUs - s_pr) * 1000.0 / win,
+                     (pf.presentUs - s_pr) / 1000.0 / std::max<double>(1, pf.presents - s_pc));
+      s_last = t1; s_ge = pf.geUs; s_pr = pf.presentUs; s_pc = pf.presents; s_fl = pf.flips; s_sk = pf.skipped; s_gl = pf.geLists;
+    }
+  }
+}
+
+void present_frame_impl() {
   if (!g_fb.addr || g_fb.stride < 480) return;
   if ((g_fb.addr & 0x0F000000) == 0 && g_fb.addr < kVramSize) g_fb.addr += kVramBase;
   const int w = 480, h = 272;
@@ -157,27 +182,45 @@ void h_set_mode(Cpu& c) { ret(c, 0); }
 }  // namespace
 
 void display_set_dump_path(const std::string& p) { g_dumpPath = p; }
+void display_set_profile(bool on) { profile().enabled = on; }
+ProfileCounters& profile() {
+  static ProfileCounters p;
+  return p;
+}
 void display_set_auto_buttons(uint32_t mask) { g_autoButtons = mask; }
 
 namespace {
 
-struct PressStep { uint64_t frame; uint32_t mask; };
+struct PressStep { uint64_t frame; uint64_t frames; uint32_t mask; int lx; int ly; };
 std::vector<PressStep> g_pressScript;
 
 }  // namespace
 
-// "sec:mask,sec:mask,..." : each entry holds the buttons for ~half a second starting at that time.
+// "sec:mask[:hold[:lx:ly]],..." : each entry holds the buttons (and an optional stick position, -128..127)
+// for `hold` seconds (default 0.5) starting at that time.
 void display_set_press_script(const std::string& s) {
   size_t pos = 0;
   while (pos < s.size()) {
     size_t end = s.find(',', pos);
     if (end == std::string::npos) end = s.size();
     std::string item = s.substr(pos, end - pos);
-    size_t colon = item.find(':');
-    if (colon != std::string::npos) {
-      double sec = std::strtod(item.substr(0, colon).c_str(), nullptr);
-      uint32_t mask = static_cast<uint32_t>(std::strtoul(item.c_str() + colon + 1, nullptr, 0));
-      g_pressScript.push_back({static_cast<uint64_t>(sec * 60.0), mask});
+    std::vector<std::string> f;
+    for (size_t a = 0; a <= item.size();) {
+      size_t b = item.find(':', a);
+      if (b == std::string::npos) b = item.size();
+      f.push_back(item.substr(a, b - a));
+      a = b + 1;
+    }
+    if (f.size() >= 2) {
+      double sec = std::strtod(f[0].c_str(), nullptr);
+      double hold = f.size() > 2 ? std::strtod(f[2].c_str(), nullptr) : 0.5;
+      PressStep st;
+      st.frame = static_cast<uint64_t>(sec * 60.0);
+      st.frames = static_cast<uint64_t>(hold * 60.0);
+      st.mask = static_cast<uint32_t>(std::strtoul(f[1].c_str(), nullptr, 0));
+      st.lx = f.size() > 4 ? std::atoi(f[3].c_str()) : 0;
+      st.ly = f.size() > 4 ? std::atoi(f[4].c_str()) : 0;
+      g_pressScript.push_back(st);
     }
     pos = end + 1;
   }
@@ -186,6 +229,7 @@ void display_set_press_script(const std::string& s) {
 namespace {
 
 void h_set_framebuf(Cpu& c) {
+  if (arg(c, 0) != g_fb.addr) ++profile().flips;
   g_fb.addr = arg(c, 0);
   g_fb.stride = arg(c, 1);
   g_fb.format = arg(c, 2);
@@ -217,7 +261,13 @@ void write_pad(uint32_t buf, uint32_t count, bool negative) {
   // Scripted input for unattended runs: held for 5 frames out of every 40.
   if (g_autoButtons && (g_vcount % 40) < 5) p.buttons |= g_autoButtons;
   for (const PressStep& st : g_pressScript)
-    if (g_vcount >= st.frame && g_vcount < st.frame + 30) p.buttons |= st.mask;
+    if (g_vcount >= st.frame && g_vcount < st.frame + st.frames) {
+      p.buttons |= st.mask;
+      if (st.lx || st.ly) {
+        p.lx = static_cast<uint8_t>(128 + st.lx);
+        p.ly = static_cast<uint8_t>(128 + st.ly);
+      }
+    }
   for (uint32_t i = 0; i < std::max<uint32_t>(count, 1); ++i) {
     uint32_t a = buf + i * 16;
     uint32_t buttons = negative ? ~p.buttons : p.buttons;
@@ -281,6 +331,7 @@ void display_service() {
   if (now < g_nextVblank) return;
   uint64_t behind = (now - g_nextVblank) / kVblankUs + 1;
   g_vcount += behind;
+  profile().skipped += behind - 1;
   g_nextVblank += behind * kVblankUs;
   if (intr_handlers_registered(kIntrVblank)) dispatch_intr(kIntrVblank);
 }

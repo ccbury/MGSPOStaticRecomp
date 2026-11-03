@@ -182,7 +182,7 @@ static void test_blend() {
   fill_rect(g, 0xFF000000 | 0xC8, 0, 0, 20, 20);  // dest red = 200
   put_verts(kVerts, {{0x80FF0000, 0, 0, 0}, {0x80FF0000, 20, 20, 0}});
   Builder b;
-  b.setup().add(cmd(0x21, 1)).add(cmd(0xDF, 0 | (2 << 4) | (3 << 8)));  // add, src alpha, 1 - src alpha
+  b.setup().add(cmd(0x21, 1)).add(cmd(0xDF, 2 | (3 << 4) | (0 << 8)));  // add, src alpha, 1 - src alpha
   b.vertex(kVerts, kThroughCol).prim(6, 2).finish();
   exec(g, b);
   uint32_t p = px32(5, 5);
