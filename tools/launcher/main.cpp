@@ -9,6 +9,7 @@
 #include <commdlg.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -27,8 +28,15 @@ using std::wstring;
 #ifndef MGSPO_SOURCE_DIR
 #define MGSPO_SOURCE_DIR ""
 #endif
+#ifndef MGSPO_TOOL_REVISION
+#define MGSPO_TOOL_REVISION "unversioned"
+#endif
 
 namespace {
+
+std::function<void(const wstring&)> g_output;
+std::atomic<bool> g_cancel{false};
+bool g_background = false;
 
 // ---- strings and console ----------------------------------------------------------------------
 
@@ -49,6 +57,7 @@ wstring toWide(const string& s) {
 }
 
 void out(const wstring& w, bool err = false) {
+  if (g_output) g_output(w);
   HANDLE h = GetStdHandle(err ? STD_ERROR_HANDLE : STD_OUTPUT_HANDLE);
   DWORD mode = 0;
   DWORD written = 0;
@@ -91,6 +100,7 @@ struct Ini {
     file = f;
     kv.clear();
     std::ifstream in(f, std::ios::binary);
+    if (!in && fs::exists(f)) die(L"cannot read settings: " + f.wstring());
     string line;
     while (std::getline(in, line)) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -98,12 +108,21 @@ struct Ini {
       if (eq == string::npos || line.empty() || line[0] == '#') continue;
       kv[line.substr(0, eq)] = line.substr(eq + 1);
     }
+    if (in.bad()) die(L"error reading settings: " + f.wstring());
   }
   void save() const {
     std::error_code ec;
-    fs::create_directories(file.parent_path(), ec);
-    std::ofstream o(file, std::ios::binary | std::ios::trunc);
+    if (!file.parent_path().empty()) fs::create_directories(file.parent_path(), ec);
+    if (ec) die(L"cannot create settings directory: " + toWide(ec.message()));
+    fs::path staging = file.wstring() + L".pending-" + std::to_wstring(GetCurrentProcessId());
+    std::ofstream o(staging, std::ios::binary | std::ios::trunc);
     for (auto& e : kv) o << e.first << '=' << e.second << "\n";
+    o.close();
+    if (!o) die(L"cannot save settings: " + file.wstring());
+    if (!MoveFileExW(staging.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      fs::remove(staging, ec);
+      die(L"cannot replace settings; previous file was kept: " + file.wstring());
+    }
   }
   string get(const string& k) const {
     auto it = kv.find(k);
@@ -143,6 +162,7 @@ using LineFn = std::function<void(const string&)>;
 // If rawCmdLine is set it is used verbatim as the command line (needed for cmd.exe /s /c).
 int runProcess(const wstring& exe, const std::vector<wstring>& args, const fs::path& cwd, const fs::path& logFile,
                const LineFn& onLine, bool echo = true, const wstring& rawCmdLine = L"") {
+  if (g_cancel) die(L"Operation cancelled. Incomplete build steps will be retried next time.");
   SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
   HANDLE rd = nullptr, wr = nullptr;
   if (!CreatePipe(&rd, &wr, &sa, 0)) die(L"could not create a pipe");
@@ -155,37 +175,83 @@ int runProcess(const wstring& exe, const std::vector<wstring>& args, const fs::p
   STARTUPINFOW si{};
   si.cb = sizeof(si);
   si.dwFlags = STARTF_USESTDHANDLES;
-  si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  HANDLE input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+  if (input == INVALID_HANDLE_VALUE) {
+    CloseHandle(rd); CloseHandle(wr);
+    die(L"could not open null input for child process");
+  }
+  si.hStdInput = input;
   si.hStdOutput = wr;
   si.hStdError = wr;
   PROCESS_INFORMATION pi{};
   std::vector<wchar_t> buf(cmd.begin(), cmd.end());
   buf.push_back(0);
   const wchar_t* app = (rawCmdLine.empty() && exe.find_first_of(L"\\/") != wstring::npos) ? exe.c_str() : nullptr;
-  BOOL ok = CreateProcessW(app, buf.data(), nullptr, nullptr, TRUE, 0, nullptr,
+  HANDLE job = CreateJobObjectW(nullptr, nullptr);
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+  limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+  if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+    if (job) CloseHandle(job);
+    CloseHandle(input);
+    CloseHandle(rd); CloseHandle(wr);
+    die(L"could not create process cancellation job");
+  }
+  struct Cleanup {
+    HANDLE pipe, job;
+    PROCESS_INFORMATION& process;
+    ~Cleanup() {
+      CloseHandle(job);  // Also stops descendants if a callback or file operation throws.
+      CloseHandle(pipe);
+      if (process.hThread) CloseHandle(process.hThread);
+      if (process.hProcess) CloseHandle(process.hProcess);
+    }
+  } cleanup{rd, job, pi};
+  BOOL ok = CreateProcessW(app, buf.data(), nullptr, nullptr, TRUE,
+                           CREATE_SUSPENDED | (g_background ? CREATE_NO_WINDOW : 0), nullptr,
                            cwd.empty() ? nullptr : cwd.c_str(), &si, &pi);
   CloseHandle(wr);
+  CloseHandle(input);
   if (!ok) {
-    CloseHandle(rd);
     die(L"could not start " + (exe.empty() ? cmd : exe) + L" (error " + std::to_wstring(GetLastError()) + L")");
   }
+  if (!AssignProcessToJobObject(job, pi.hProcess)) {
+    TerminateProcess(pi.hProcess, 1);
+    die(L"could not contain child process for safe cancellation");
+  }
+  if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) die(L"could not resume owned child process");
 
   std::ofstream log;
   if (!logFile.empty()) {
     std::error_code ec;
     fs::create_directories(logFile.parent_path(), ec);
     log.open(logFile, std::ios::binary | std::ios::app);
+    if (!log) die(L"cannot open operation log: " + logFile.wstring());
   }
   string pending;
   char chunk[8192];
   DWORD got = 0;
-  while (ReadFile(rd, chunk, sizeof(chunk), &got, nullptr) && got > 0) {
+  for (;;) {
+    if (g_cancel) { TerminateJobObject(job, ERROR_CANCELLED); break; }
+    DWORD available = 0;
+    if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &available, nullptr)) break;
+    if (!available) {
+      if (WaitForSingleObject(pi.hProcess, 30) == WAIT_OBJECT_0) {
+        if (!PeekNamedPipe(rd, nullptr, 0, nullptr, &available, nullptr) || !available) break;
+      }
+      continue;
+    }
+    if (!ReadFile(rd, chunk, std::min<DWORD>(sizeof(chunk), available), &got, nullptr) || !got) break;
     if (echo) {
       DWORD w = 0;
       WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), chunk, got, &w, nullptr);
+      if (g_output) g_output(toWide(string(chunk, got)));
     }
-    if (log) log.write(chunk, got);
-    pending.append(chunk, got);
+    if (log.is_open()) {
+      log.write(chunk, got);
+      if (!log) die(L"cannot write operation log: " + logFile.wstring());
+    }
+    if (onLine) pending.append(chunk, got);
+    if (pending.size() > 1024 * 1024) die(L"Child process produced an oversized output line; operation stopped.");
     size_t nl;
     while ((nl = pending.find('\n')) != string::npos) {
       string line = pending.substr(0, nl);
@@ -195,12 +261,11 @@ int runProcess(const wstring& exe, const std::vector<wstring>& args, const fs::p
     }
   }
   if (!pending.empty() && onLine) onLine(pending);
-  CloseHandle(rd);
-  WaitForSingleObject(pi.hProcess, INFINITE);
+  while (WaitForSingleObject(pi.hProcess, 30) == WAIT_TIMEOUT)
+    if (g_cancel) TerminateJobObject(job, ERROR_CANCELLED);
   DWORD code = 1;
   GetExitCodeProcess(pi.hProcess, &code);
-  CloseHandle(pi.hProcess);
-  CloseHandle(pi.hThread);
+  if (g_cancel) die(L"Operation cancelled. Saves/settings were kept; incomplete steps will be retried.");
   return static_cast<int>(code);
 }
 
@@ -211,6 +276,8 @@ struct Options {
   wstring iso;
   wstring work;
   wstring source;
+  wstring configPath;
+  string controls;
   std::vector<wstring> gameArgs;
   bool noRelaunch = false;
   bool saves = false;
@@ -223,6 +290,24 @@ struct Ctx {
   Ini state;   // inside the work dir: stamps for each cached step
   fs::path exeDir, source, work, iso;
   fs::path disc, boot, gen, build, save, logs;
+};
+
+struct OperationLock {
+  HANDLE handle = INVALID_HANDLE_VALUE;
+  OperationLock() = default;
+  OperationLock(const OperationLock&) = delete;
+  OperationLock& operator=(const OperationLock&) = delete;
+  void release() {
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    handle = INVALID_HANDLE_VALUE;
+  }
+  void acquire(const fs::path& work) {
+    handle = CreateFileW((work / L".launcher-operation").c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                         OPEN_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+      die(L"Work directory is busy in another launcher/game, or is not writable. Wait for it to finish.");
+  }
+  ~OperationLock() { release(); }
 };
 
 // Stage modules lifted by default, relative to PSP_GAME/USRDIR/stage.
@@ -272,7 +357,7 @@ wstring pickIso() {
 
 void resolvePaths(Ctx& c) {
   c.exeDir = exePath().parent_path();
-  c.config.load(configFile());
+  c.config.load(c.opt.configPath.empty() ? configFile() : fs::path(c.opt.configPath));
 
   wstring workStr = c.opt.work;
   if (workStr.empty()) workStr = toWide(c.config.get("work"));
@@ -283,7 +368,6 @@ void resolvePaths(Ctx& c) {
   if (!fs::is_directory(c.work)) die(L"cannot create work directory " + c.work.wstring());
   if (!c.opt.work.empty() && toUtf8(c.work.wstring()) != c.config.get("work")) {
     c.config.set("work", toUtf8(c.work.wstring()));
-    c.config.save();
   }
   c.work = shortPath(c.work);
 
@@ -295,11 +379,14 @@ void resolvePaths(Ctx& c) {
   c.logs = c.work / L"logs";
   c.state.load(c.work / L"state.ini");
 
-  // sources: explicit option, then the path baked in at configure time, then a search upwards
+  // An explicit/remembered source must never silently fall back to another checkout.
   std::vector<fs::path> cands;
   if (!c.opt.source.empty()) cands.emplace_back(c.opt.source);
-  cands.emplace_back(toWide(MGSPO_SOURCE_DIR));
-  for (fs::path p = c.exeDir; !p.empty() && p != p.parent_path(); p = p.parent_path()) cands.push_back(p);
+  else if (!c.config.get("source").empty()) cands.emplace_back(toWide(c.config.get("source")));
+  if (cands.empty()) {
+    cands.emplace_back(toWide(MGSPO_SOURCE_DIR));
+    for (fs::path p = c.exeDir; !p.empty() && p != p.parent_path(); p = p.parent_path()) cands.push_back(p);
+  }
   for (auto& p : cands) {
     if (!p.empty() && fs::exists(p / L"CMakeLists.txt", ec) && fs::exists(p / L"runtime" / L"src" / L"game_main.cpp", ec)) {
       c.source = shortPath(fs::absolute(p, ec));
@@ -320,8 +407,7 @@ void resolveIso(Ctx& c) {
   std::error_code ec;
   c.iso = fs::absolute(fs::path(iso), ec);
   if (!fs::is_regular_file(c.iso, ec))
-    die(L"ISO not found: " + c.iso.wstring() + L"\nPass a different path with --iso, or delete " + configFile().wstring() +
-        L" to be asked again.");
+    die(L"ISO not found: " + c.iso.wstring() + L"\nChoose another image in the desktop UI, or pass --iso <file>.");
   if (toUtf8(c.iso.wstring()) != c.config.get("iso")) {
     c.config.set("iso", toUtf8(c.iso.wstring()));
     c.config.save();
@@ -444,12 +530,23 @@ std::vector<string> stageList(const Ctx& c) {
 
 string isoId(const Ctx& c) { return toUtf8(c.iso.wstring()) + "|" + fileStamp(c.iso); }
 
+string sourceRevision(const Ctx& c) {
+  if (!fs::exists(c.source / L".git")) return "unversioned";
+  string revision;
+  if (runProcess(L"git.exe", {L"rev-parse", L"HEAD"}, c.source, {}, [&](const string& l) { revision = l; }, false) != 0)
+    die(L"Cannot read source revision. Install Git for Windows and check this checkout.");
+  if (revision.size() != 40 && revision.size() != 64) die(L"Invalid source revision.");
+  return revision;
+}
+
 string liftStamp(const Ctx& c) {
-  return isoId(c) + "|" + joinList(stageList(c)) + "|" + fileStamp(toolExe(c, L"mgspo-lift.exe"));
+  return isoId(c) + "|" + joinList(stageList(c)) + "|" + fileStamp(toolExe(c, L"mgspo-lift.exe")) +
+         "|" + sourceRevision(c);
 }
 
 string buildStamp(const Ctx& c) {
-  return liftStamp(c) + "|" + fileStamp(exePath()) + "|" + toUtf8(c.source.wstring());
+  return liftStamp(c) + "|pipeline-2|" + fileStamp(c.exeDir / L"mgspo-launcher.exe") +
+         "|" + toUtf8(c.source.wstring());
 }
 
 bool cachedCompilerIsX64(const Ctx& c) {
@@ -651,17 +748,29 @@ string stageFromLog(const Ctx& c, const string& path, uintmax_t size) {
 }
 
 void ensureBuilt(Ctx& c, bool forceLift) {
+  if (fs::exists(c.source / L".git" / L"mgspo-owner") && sourceRevision(c) != MGSPO_TOOL_REVISION)
+    die(L"These launcher/tools were built for a different source revision. Use the updated UI, "
+        L"or Check updates then Update / rebuild before running the managed source.");
   stepExtract(c);
   stepLift(c, forceLift);
   stepBuild(c, forceLift);
 }
 
+std::vector<wstring> gameArguments(const Ctx& c) {
+  std::vector<wstring> args = {(c.boot / L"boot.elf").wstring(), L"--disc", c.disc.wstring(), L"--iso", c.iso.wstring(),
+                               L"--save", c.save.wstring()};
+  string controls = c.opt.controls.empty() ? c.config.get("controls") : c.opt.controls;
+  if (controls.empty()) controls = "modern";
+  if (controls != "modern" && controls != "legacy") die(L"Controls must be modern or legacy.");
+  args.insert(args.end(), {L"--controls", toWide(controls)});
+  for (auto& a : c.opt.gameArgs) args.push_back(a);
+  return args;
+}
+
 int launchGame(Ctx& c, std::set<string>& unlifted) {
   std::error_code ec;
   fs::create_directories(c.save, ec);
-  std::vector<wstring> args = {(c.boot / L"boot.elf").wstring(), L"--disc", c.disc.wstring(), L"--iso", c.iso.wstring(),
-                               L"--save", c.save.wstring()};
-  for (auto& a : c.opt.gameArgs) args.push_back(a);
+  auto args = gameArguments(c);
   fs::path log = c.logs / L"game.log";
   fs::remove(log, ec);
   return runProcess((c.build / L"mgspo-game.exe").wstring(), args, c.work, log, [&](const string& l) {
@@ -753,7 +862,7 @@ int cmdClean(Ctx& c) {
   if (c.opt.all) {
     fs::remove_all(c.logs, ec);
     fs::remove(c.work / L"state.ini", ec);
-    fs::remove(configFile(), ec);
+    fs::remove(c.config.file, ec);
     say(L"Removed logs and remembered settings");
   }
   return 0;
@@ -792,6 +901,8 @@ void usage() {
       L"  --iso <file>      disc image (remembered for next time; a file picker opens if none is known)\n"
       L"  --work <dir>      work directory (default %LOCALAPPDATA%\\MGSPO\\work; needs about 6 GB free)\n"
       L"  --source <dir>    project source tree (normally detected)\n"
+      L"  --config <file>   alternate settings file\n"
+      L"  --controls <modern|legacy>  input style (otherwise remembered setting)\n"
       L"  --no-relaunch     do not rebuild and restart when the game needs another stage\n"
       L"  --saves / --all   extra things for clean\n"
       L"  -- <args>         everything after -- is passed to mgspo-game (for example --headless --timeout 60)\n"
@@ -810,6 +921,11 @@ bool parse(int argc, wchar_t** argv, Options& o) {
     } else if (a == L"--iso" && more) o.iso = argv[++i];
     else if (a == L"--work" && more) o.work = argv[++i];
     else if (a == L"--source" && more) o.source = argv[++i];
+    else if (a == L"--config" && more) o.configPath = argv[++i];
+    else if (a == L"--controls" && more) {
+      o.controls = toUtf8(argv[++i]);
+      if (o.controls != "modern" && o.controls != "legacy") { warn(L"Controls must be modern or legacy."); return false; }
+    }
     else if (a == L"--no-relaunch") o.noRelaunch = true;
     else if (a == L"--saves") o.saves = true;
     else if (a == L"--all") o.all = true;
@@ -828,6 +944,7 @@ bool parse(int argc, wchar_t** argv, Options& o) {
 
 int wmain(int argc, wchar_t** argv) {
   SetConsoleOutputCP(CP_UTF8);
+  g_background = GetConsoleWindow() == nullptr;
   Ctx c;
   int rc = 0;
   bool explicitCmd = argc > 1;
@@ -841,6 +958,9 @@ int wmain(int argc, wchar_t** argv) {
       return 0;
     }
     resolvePaths(c);
+    OperationLock operation;
+    operation.acquire(c.work);
+    if (!c.opt.work.empty()) c.config.save();
     const string& m = c.opt.cmd;
     if (m != "clean" && m != "status" && c.source.empty())
       die(L"Could not find the project sources (CMakeLists.txt). Pass --source <repo dir>.");
@@ -848,6 +968,9 @@ int wmain(int argc, wchar_t** argv) {
          : m == "clean" ? cmdClean(c) : cmdStatus(c);
   } catch (const Fatal& f) {
     out(L"\nerror: " + f.msg + L"\n", true);
+    rc = 1;
+  } catch (const std::exception& error) {
+    out(L"\nerror: " + toWide(error.what()) + L"\n", true);
     rc = 1;
   }
   // when started by double click the console would vanish before the message can be read
