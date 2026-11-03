@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(mgspo_recomp LANGUAGES CXX)
 
+if(WIN32 AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR
+    "MGSPO requires a 64-bit Windows build. Use an x64 Native Tools Command Prompt "
+    "(or -A x64 with the Visual Studio generator) and configure in a fresh build directory.")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

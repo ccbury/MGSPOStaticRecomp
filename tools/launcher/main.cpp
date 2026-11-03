@@ -360,11 +360,19 @@ wstring findVsInstall() {
   return found;
 }
 
+bool haveX64Toolchain() {
+  wchar_t target[32] = {};
+  DWORD n = GetEnvironmentVariableW(L"VSCMD_ARG_TGT_ARCH", target, static_cast<DWORD>(std::size(target)));
+  if (!n || n >= std::size(target) || lower(target) != L"x64") return false;
+  fs::path compiler(searchExe(L"cl.exe"));
+  return !compiler.empty() && lower(compiler.parent_path().filename().wstring()) == L"x64" &&
+         GetEnvironmentVariableW(L"VCINSTALLDIR", nullptr, 0) > 0;
+}
+
 void setupToolchain() {
   say(L"Looking for the C++ toolchain...");
-  bool haveCl = !searchExe(L"cl.exe").empty() && GetEnvironmentVariableW(L"VCINSTALLDIR", nullptr, 0) > 0;
   wstring vs;
-  if (!haveCl) {
+  if (!haveX64Toolchain()) {
     vs = findVsInstall();
     if (vs.empty()) {
       die(L"Could not find Visual Studio or Build Tools with the C++ x64 tools.\n"
@@ -373,7 +381,7 @@ void setupToolchain() {
     }
     fs::path vcvars = fs::path(vs) / L"VC" / L"Auxiliary" / L"Build" / L"vcvars64.bat";
     if (!fs::exists(vcvars)) die(L"vcvars64.bat is missing from " + vs + L"; repair the C++ workload in the VS installer.");
-    say(L"  using " + vs);
+    say(L"  selecting x64 tools from " + vs);
     wstring cmdline = L"cmd.exe /s /c \"call \"" + vcvars.wstring() + L"\" >nul 2>&1 && set\"";
     std::vector<std::pair<wstring, wstring>> env;
     int rc = runProcess(L"", {}, {}, {}, [&](const string& l) {
@@ -383,9 +391,10 @@ void setupToolchain() {
     }, false, cmdline);
     if (rc != 0 || env.empty()) die(L"vcvars64.bat failed; open the Visual Studio Installer and repair the C++ workload.");
     for (auto& e : env) SetEnvironmentVariableW(e.first.c_str(), e.second.c_str());
-    if (searchExe(L"cl.exe").empty()) die(L"cl.exe is still not available after running vcvars64.bat.");
+    if (!haveX64Toolchain())
+      die(L"An x64 compiler is not available after running vcvars64.bat. Repair the C++ x64 tools in the VS installer.");
   } else {
-    say(L"  already inside a developer prompt");
+    say(L"  already inside an x64 developer prompt");
   }
 
   // VS ships its own CMake and Ninja; use them if the system doesn't have its own.
@@ -443,6 +452,30 @@ string buildStamp(const Ctx& c) {
   return liftStamp(c) + "|" + fileStamp(exePath()) + "|" + toUtf8(c.source.wstring());
 }
 
+bool cachedCompilerIsX64(const Ctx& c) {
+  fs::path files = c.build / L"CMakeFiles";
+  if (!fs::is_directory(files)) return false;
+  bool found = false;
+  for (const auto& entry : fs::directory_iterator(files)) {
+    if (!entry.is_directory()) continue;
+    fs::path file = entry.path() / L"CMakeCXXCompiler.cmake";
+    if (!fs::exists(file)) continue;
+    std::ifstream in(file, std::ios::binary);
+    if (!in) die(L"cannot read " + file.wstring());
+    bool x64 = false, pointer64 = false;
+    string line;
+    while (std::getline(in, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line == "set(CMAKE_CXX_COMPILER_ARCHITECTURE_ID x64)") x64 = true;
+      if (line == "set(CMAKE_CXX_SIZEOF_DATA_PTR \"8\")") pointer64 = true;
+    }
+    if (in.bad()) die(L"error reading " + file.wstring());
+    if (!x64 || !pointer64) return false;
+    found = true;
+  }
+  return found;
+}
+
 bool buildCacheMatches(const Ctx& c) {
   fs::path file = c.build / L"CMakeCache.txt";
   if (!fs::exists(file)) return false;
@@ -465,7 +498,7 @@ bool buildCacheMatches(const Ctx& c) {
   // equivalent() also recognises the 8.3 paths used by the launcher.
   return sameDirectory("CMAKE_HOME_DIRECTORY:INTERNAL", c.source) &&
          sameDirectory("CMAKE_CACHEFILE_DIR:INTERNAL", c.build) &&
-         entries["CMAKE_GENERATOR:INTERNAL"] == "Ninja";
+         entries["CMAKE_GENERATOR:INTERNAL"] == "Ninja" && cachedCompilerIsX64(c);
 }
 
 void resetBuildCache(const Ctx& c) {
@@ -574,7 +607,7 @@ void stepBuild(Ctx& c, bool force) {
   setupToolchain();
   if (!cacheMatches) {
     if (fs::exists(c.build / L"CMakeCache.txt"))
-      say(L"  Source checkout or build directory changed; resetting CMake configuration (saves are kept).");
+      say(L"  Source checkout, build directory or compiler architecture changed; resetting CMake configuration (saves are kept).");
     resetBuildCache(c);
   }
   fs::path log = c.logs / L"build.log";
@@ -582,7 +615,8 @@ void stepBuild(Ctx& c, bool force) {
   fs::remove(log, ec);
   int rc = runProcess(L"cmake.exe",
                       {L"-S", c.source.wstring(), L"-B", c.build.wstring(), L"-G", L"Ninja", L"-DCMAKE_BUILD_TYPE=Release",
-                       L"-DMGSPO_GENERATED_DIR=" + c.gen.generic_wstring(), L"-DMGSPO_BUILD_TESTS=OFF"},
+                       L"-DMGSPO_GENERATED_DIR=" + c.gen.generic_wstring(), L"-DMGSPO_BUILD_TESTS=OFF",
+                       L"-DCMAKE_CXX_COMPILER=" + searchExe(L"cl.exe")},
                       {}, log, nullptr);
   if (rc != 0) die(L"cmake configure failed, see " + log.wstring());
   rc = runProcess(L"cmake.exe", {L"--build", c.build.wstring(), L"--target", L"mgspo-game"}, {}, log, nullptr);

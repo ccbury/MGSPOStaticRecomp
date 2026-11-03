@@ -38,9 +38,9 @@ cmake --build build --target mgspo-launcher
 build\mgspo-launcher run "D:\games\Portable Ops.iso"
 ```
 
-(run these from an "x64 Native Tools Command Prompt", or any prompt that already has CMake and
-Ninja; the launcher itself finds Visual Studio through `vswhere` and sets up the compiler
-environment.) `play.bat` is a double-clickable wrapper around it; with no ISO known it opens a file
+(run these from an "x64 Native Tools Command Prompt"; 32-bit Windows builds are not supported.
+The launcher itself finds Visual Studio through `vswhere` and selects the x64 compiler even when
+started from an x86 developer prompt.) `play.bat` is a double-clickable wrapper around it; with no ISO known it opens a file
 picker.
 
 The first run checks the disc id, extracts the disc, lifts the main module, helper modules and the
@@ -49,8 +49,8 @@ default stage list, builds `mgspo-game` and starts it. The ISO path is remembere
 straight away. If the game loads a stage that was not lifted, the launcher spots the `not lifted`
 line in the game log, adds the stage, re-lifts, rebuilds and restarts.
 
-Moving to a different source checkout automatically resets the CMake configuration in the work
-directory before building. Extracted disc files and saves are kept.
+Moving to a different source checkout, or finding a cached x86 compiler, automatically resets the
+CMake configuration in the work directory before building. Extracted disc files and saves are kept.
 
 ```
 mgspo-launcher [run] [iso]     set up what is missing, then play (default)
