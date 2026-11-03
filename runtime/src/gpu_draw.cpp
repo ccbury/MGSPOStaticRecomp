@@ -9,6 +9,7 @@
 #include <psp/memory.h>
 
 #include "gpu.h"
+#include "raster_fast.h"
 
 namespace psp {
 namespace ge {
@@ -94,7 +95,6 @@ struct CV {
   float spec[3] = {0, 0, 0};
   float fog = 1;
 };
-
 struct SV {
   float x = 0, y = 0, z = 0, invw = 1;
   float u = 0, v = 0;
@@ -308,6 +308,7 @@ struct Raster {
 
   explicit Raster(Gpu& gpu) : g(gpu), st(gpu.stats_), r(gpu.r_) {}
 
+
   bool begin() {
     through = (r[0x12] >> 23) & 1;
     clear = r[0xD3] & 1;
@@ -381,6 +382,7 @@ struct Raster {
     keepReady = false;
     keepCache = keep_mask();
     keepReady = true;
+    decide_fast();
     return true;
   }
 
@@ -417,6 +419,90 @@ struct Raster {
   bool palReady = false;
   uint32_t keepCache = 0;
   bool keepReady = false;
+
+  // fast span path (raster_fast.cpp), used when the draw state is simple enough
+  fast::Ctx fx;
+  fast::Batch batch;
+  bool fastAllowed = false;
+  int fastState = 0;  // 0 not resolved yet, 1 usable, 2 not usable for this draw
+
+  static fast::Vert fv(const SV& s) {
+    fast::Vert v;
+    v.x = s.x; v.y = s.y; v.z = s.z; v.invw = s.invw; v.u = s.u; v.v = s.v; v.fog = s.fog;
+    for (int i = 0; i < 4; ++i) v.col[i] = s.col[i];
+    return v;
+  }
+
+  void decide_fast() {
+    fastAllowed = !clear && fast::mode() != fast::Mode::Reference && !ctestOn && !stestOn && !logicOn && !(secondarySpec && lighting);
+    fastState = 0;
+  }
+
+  bool use_fast() {
+    if (!fastAllowed) return false;
+    if (fastState == 0) fastState = setup_fast() ? 1 : 2;
+    return fastState == 1;
+  }
+
+  bool setup_fast() {
+    fx = fast::Ctx();
+    fx.fb = fb;
+    fx.fbStride = fbStride;
+    fx.fbFmt = fbFmt;
+    fx.keep = keepCache;
+    fx.sx1 = sx1; fx.sy1 = sy1; fx.sx2 = sx2; fx.sy2 = sy2;
+    fx.zb = zb;
+    fx.zStride = zStride;
+    fx.zTest = ztestOn;
+    fx.zWrite = !(r[0xE7] & 1);
+    fx.zFunc = r[0xDE] & 7;
+    fx.clipZ = clipOn && !through;
+    fx.zlo = static_cast<float>(r[0xD6] & 0xFFFF);
+    fx.zhi = static_cast<float>(r[0xD7] & 0xFFFF);
+    fx.blend = blendOn;
+    fx.sfac = r[0xDF] & 15;
+    fx.dfac = (r[0xDF] >> 4) & 15;
+    fx.bfunc = (r[0xDF] >> 8) & 7;
+    fx.fixA = r[0xE0];
+    fx.fixB = r[0xE1];
+    fx.atest = atestOn;
+    fx.fog = fogOn;
+    fx.fogCol = r[0xCF];
+    fx.aMask = (r[0xDB] >> 16) & 0xFF;
+    fx.aRef = (r[0xDB] >> 8) & 0xFF;
+    fx.aFunc = r[0xDB] & 7;
+    if (texOn) {
+      if (tFmt > 5 || ((tFmt == 4 || tFmt == 5) && !palReady)) return false;
+      fast::TexSource ts;
+      ts.mem = gptr(tAddr);
+      ts.avail = region_end(tAddr) - (tAddr & 0x3FFFFFFF);
+      ts.addr = tAddr;
+      ts.fmt = tFmt;
+      ts.swizzled = tSwz;
+      ts.bufW = tBufW;
+      ts.w = tW;
+      ts.h = tH;
+      ts.inVram = (tAddr & 0x3FFFFFFF) >= 0x04000000 && (tAddr & 0x3FFFFFFF) < 0x04200000;
+      fast::Texture t;
+      if (!fast::texture_lookup(ts, t)) return false;
+      fx.tex = true;
+      fx.texRgba = t.rgba;
+      fx.texIdx = t.idx;
+      fx.pal = pal;
+      fx.tW = tW;
+      fx.tH = tH;
+      fx.clampU = tClampU;
+      fx.clampV = tClampV;
+      fx.linear = tLinear;
+      fx.tFunc = tFunc;
+      fx.tAlpha = tAlpha;
+      fx.tDouble = tDouble;
+      fx.env = env;
+    }
+    const int fcat = (r[0xD3] & 1) ? 0 : (texOn ? (blendOn ? 3 : 2) : 1);
+    batch.begin(&fx, pal, fcat);
+    return true;
+  }
 
   uint32_t clut_entry(uint32_t idx) const {
     if (palReady) return pal[idx & 255];
@@ -800,6 +886,10 @@ struct Raster {
       std::swap(b, c);
       area = -area;
     }
+    if (use_fast()) {
+      if (batch.add_tri(fv(a), fv(b), fv(c))) return;
+    }
+    fast::sync();
     int minX = std::max(sx1, static_cast<int>(std::floor(std::min({a.x, b.x, c.x}))));
     int maxX = std::min(sx2, static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
     int minY = std::max(sy1, static_cast<int>(std::floor(std::min({a.y, b.y, c.y}))));
@@ -879,6 +969,23 @@ struct Raster {
     if (w <= 0 || h <= 0) return;
     int ix0 = std::max(sx1, static_cast<int>(std::ceil(x0 - 0.5f))), ix1 = std::min(sx2, static_cast<int>(std::ceil(x1 - 0.5f)) - 1);
     int iy0 = std::max(sy1, static_cast<int>(std::ceil(y0 - 0.5f))), iy1 = std::min(sy2, static_cast<int>(std::ceil(y1 - 0.5f)) - 1);
+    if (clear && fast::mode() != fast::Mode::Reference) {
+      if (ix0 > ix1 || iy0 > iy1) return;
+      fast::sync();
+      fast::Ctx cx;
+      cx.fb = fb;
+      cx.fbStride = fbStride;
+      cx.fbFmt = fbFmt;
+      cx.zb = zb;
+      cx.zStride = zStride;
+      uint32_t c = 0;
+      for (int i = 0; i < 4; ++i) c |= static_cast<uint32_t>(clampi(static_cast<int>(b.col[i] * 255.0f + 0.5f), 0, 255)) << (8 * i);
+      const uint16_t zv = static_cast<uint16_t>(clampi(static_cast<int>(std::clamp(b.z, 0.0f, 65535.0f) + 0.5f), 0, 65535));
+      fast::clear_rect(cx, ix0, iy0, ix1, iy1, clearC, clearA, clearZ && zb, c, zv);
+      return;
+    }
+    if (!clear && use_fast() && batch.add_rect(fv(a), fv(b))) return;
+    fast::sync();
     for (int y = iy0; y <= iy1; ++y) {
       float ty = (y + 0.5f - y0) / h;
       float v = v0 + (v1 - v0) * ty;
@@ -892,6 +999,7 @@ struct Raster {
   }
 
   void line(const SV& a, const SV& b) {
+    fast::sync();
     float dx = b.x - a.x, dy = b.y - a.y;
     int steps = static_cast<int>(std::ceil(std::max(std::fabs(dx), std::fabs(dy))));
     if (steps < 1) steps = 1;
@@ -908,6 +1016,7 @@ struct Raster {
   }
 
   void point(const SV& a) {
+    fast::sync();
     int x = static_cast<int>(std::floor(a.x)), y = static_cast<int>(std::floor(a.y));
     if (clear) clear_pixel(x, y, a.z, a.col);
     else fragment(x, y, a.z, a.col, a.spec, a.fog, a.u, a.v);
@@ -1341,6 +1450,23 @@ void Gpu::draw_patch(uint32_t arg, bool spline) {
     for (int k = 0; k < 4; ++k) o.col[k] += s.col[k] * w;
   };
 
+  std::vector<float> wuTab, wvTab;
+  if (spline) {
+    // the weights only depend on the grid column or row, so compute them once per patch
+    wuTab.resize(static_cast<size_t>(nu) * ucount);
+    wvTab.resize(static_cast<size_t>(nv) * vcount);
+    for (int i = 0; i < nu; ++i) {
+      const float gu = static_cast<float>(i) / (nu - 1);
+      const float tu = 3 + gu * (ucount - 3) - (gu >= 1 ? 1e-4f : 0);
+      for (int a = 0; a < ucount; ++a) wuTab[static_cast<size_t>(i) * ucount + a] = basis(ku, a, 3, tu);
+    }
+    for (int j = 0; j < nv; ++j) {
+      const float gv = static_cast<float>(j) / (nv - 1);
+      const float tv = 3 + gv * (vcount - 3) - (gv >= 1 ? 1e-4f : 0);
+      for (int b = 0; b < vcount; ++b) wvTab[static_cast<size_t>(j) * vcount + b] = basis(kv, b, 3, tv);
+    }
+  }
+
   std::vector<CV> grid(static_cast<size_t>(nu) * nv);
   for (int j = 0; j < nv; ++j) {
     for (int i = 0; i < nu; ++i) {
@@ -1360,12 +1486,13 @@ void Gpu::draw_patch(uint32_t arg, bool spline) {
           for (int a = 0; a < 4; ++a)
             blend_into(o, cp[static_cast<size_t>(pj * 3 + b) * ucount + pi * 3 + a], bu[a] * bv[b]);
       } else {
-        float tu = 3 + gu * (ucount - 3) - (gu >= 1 ? 1e-4f : 0), tv = 3 + gv * (vcount - 3) - (gv >= 1 ? 1e-4f : 0);
+        const float* wuRow = &wuTab[static_cast<size_t>(i) * ucount];
+        const float* wvRow = &wvTab[static_cast<size_t>(j) * vcount];
         for (int b = 0; b < vcount; ++b) {
-          float wv = basis(kv, b, 3, tv);
+          const float wv = wvRow[b];
           if (wv == 0) continue;
           for (int a = 0; a < ucount; ++a) {
-            float wu = basis(ku, a, 3, tu);
+            const float wu = wuRow[a];
             if (wu != 0) blend_into(o, cp[static_cast<size_t>(b) * ucount + a], wu * wv);
           }
         }

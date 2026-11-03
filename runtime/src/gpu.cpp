@@ -5,6 +5,7 @@
 #include <psp/memory.h>
 
 #include "gpu.h"
+#include "raster_fast.h"
 
 namespace psp {
 namespace ge {
@@ -160,7 +161,15 @@ void Gpu::exec_word(uint32_t word) {
   execute(word, nullptr, nullptr, &s);
 }
 
+namespace {
+struct SyncOnExit {
+  ~SyncOnExit() { fast::sync(); }
+};
+}  // namespace
+
 Stop Gpu::run(ListContext& l, Host* host) {
+  SyncOnExit syncOnExit;
+  if (stats_) fast::set_stats_sink(&stats_->fragments, stats_->catNs);
   int guard = 0;
   try {
     while (true) {
@@ -305,6 +314,7 @@ void Gpu::load_clut(uint32_t arg) {
 }
 
 void Gpu::transfer() {
+  fast::sync();
   uint32_t src = (r_[0xB2] & 0xFFFFFF) | ((r_[0xB3] & 0xFF0000) << 8);
   uint32_t dst = (r_[0xB4] & 0xFFFFFF) | ((r_[0xB5] & 0xFF0000) << 8);
   uint32_t sw = r_[0xB3] & 0x7FF, dw = r_[0xB5] & 0x7FF;

@@ -34,6 +34,49 @@ nearest/bilinear, wrap/clamp, texture functions, alpha test, colour test, stenci
 mask, blending (all equations and fix colours), logic op, pixel masks, clear mode, and `TRXKICK`
 block transfers.
 
+## Fast rasteriser (`raster_fast.cpp`)
+
+Triangles and sprites that use common state go through an integer span rasteriser instead of the float
+reference path in `gpu_draw.cpp`. The reference path stays as the fallback and as the correctness
+reference (`MGSPO_GE_REF=1` forces it).
+
+- Vertices snap to 1/16 pixel like the hardware, coverage is solved per row, and z, colour, fog and
+  texture coordinates come from plane equations (perspective divide only when the draw needs it).
+- 12 templated span functions (textured or not, blended or not, depth test or not) are picked per draw,
+  so the per-fragment loop has no state switches.
+- Draws are queued, not drawn: `fast::sync()` renders the queue split into bands of rows on a small
+  thread pool (`MGSPO_GE_THREADS`, default half the logical CPUs, max 6). Inside a band draws keep
+  their order and bands never overlap, so the output does not depend on the thread count. The queue
+  is synced at the end of every list, before block transfers, before any reference-path pixel work,
+  and before textures that live in VRAM or when a cached texture is replaced.
+- Textures are decoded once into a cache keyed by address, format and size (swizzle and 16-bit formats
+  to RGBA8888; CLUT8/CLUT4 to indices with the palette applied per fragment). A content hash of the
+  source bytes detects rewrites.
+- Not handled (falls back to the reference path): colour test, stencil, logic op, secondary colour with
+  lighting, DXT and CLUT16/32 textures, and coordinates beyond +-8192. Clear-mode rectangles use a
+  dedicated fill.
+- The spline patch code precomputes the basis weights per grid row/column.
+- Fragment counts and per-class raster time in `--ge-stats` are attributed at sync time.
+
+`tests/test_ge.cpp` renders 128 random through-mode scenes with both paths and compares them. Edge
+coverage differs by about 0.5% of pixels because the reference path uses float vertices.
+
+### Profiling
+
+`--sample [delay]` starts a 1 kHz sampling profiler (Windows, needs debug symbols for names) and
+prints the share of lifted guest code, GE, waiting and other runtime plus the top symbols when the
+run ends. `--profile` and `--ge-stats` give flips/s and GE time per second.
+
+### Numbers (prison cell, same machine)
+
+| | before | after |
+|---|---|---|
+| flips/s | 7.5-15 | 16-19 |
+| GE time per wall second | 580-790 ms | 290-390 ms |
+| ns per fragment | ~47 | ~10 |
+
+The guest's own frame pacing (about 30 fps) now mostly decides what is presented; the sampler shows
+the process waiting for vblank most of the time in this scene.
 ## Debugging
 
 - `--ge-dump <file>` (or `MGSPO_GE_DUMP`) writes every executed command with its address.
