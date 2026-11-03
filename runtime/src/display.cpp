@@ -88,9 +88,34 @@ void write_png(const std::string& path, const uint32_t* argb, int w, int h) {
   }
 }
 
+void present_frame_impl();
+
 void present_frame() {
   if (g_lastPresented == g_vcount) return;
   g_lastPresented = g_vcount;
+  ProfileCounters& pf = profile();
+  uint64_t t0 = pf.enabled ? now_us() : 0;
+  present_frame_impl();
+  if (pf.enabled) {
+    uint64_t t1 = now_us();
+    pf.presentUs += t1 - t0;
+    ++pf.presents;
+    static uint64_t s_last = 0, s_ge = 0, s_pr = 0, s_pc = 0, s_fl = 0, s_sk = 0, s_gl = 0;
+    if (t1 - s_last >= 5000000) {
+      double win = static_cast<double>(t1 - s_last);
+      if (s_last)
+        std::fprintf(stderr,
+                     "[prof] %.1f flips/s, %.1f presents/s, skipped vblanks %llu, GE %.1f ms/s over %llu lists, present %.1f ms/s (%.2f ms each)\n",
+                     (pf.flips - s_fl) * 1e6 / win, (pf.presents - s_pc) * 1e6 / win,
+                     (unsigned long long)(pf.skipped - s_sk), (pf.geUs - s_ge) * 1000.0 / win,
+                     (unsigned long long)(pf.geLists - s_gl), (pf.presentUs - s_pr) * 1000.0 / win,
+                     (pf.presentUs - s_pr) / 1000.0 / std::max<double>(1, pf.presents - s_pc));
+      s_last = t1; s_ge = pf.geUs; s_pr = pf.presentUs; s_pc = pf.presents; s_fl = pf.flips; s_sk = pf.skipped; s_gl = pf.geLists;
+    }
+  }
+}
+
+void present_frame_impl() {
   if (!g_fb.addr || g_fb.stride < 480) return;
   if ((g_fb.addr & 0x0F000000) == 0 && g_fb.addr < kVramSize) g_fb.addr += kVramBase;
   const int w = 480, h = 272;
@@ -157,6 +182,11 @@ void h_set_mode(Cpu& c) { ret(c, 0); }
 }  // namespace
 
 void display_set_dump_path(const std::string& p) { g_dumpPath = p; }
+void display_set_profile(bool on) { profile().enabled = on; }
+ProfileCounters& profile() {
+  static ProfileCounters p;
+  return p;
+}
 void display_set_auto_buttons(uint32_t mask) { g_autoButtons = mask; }
 
 namespace {
@@ -199,6 +229,7 @@ void display_set_press_script(const std::string& s) {
 namespace {
 
 void h_set_framebuf(Cpu& c) {
+  if (arg(c, 0) != g_fb.addr) ++profile().flips;
   g_fb.addr = arg(c, 0);
   g_fb.stride = arg(c, 1);
   g_fb.format = arg(c, 2);
@@ -300,6 +331,7 @@ void display_service() {
   if (now < g_nextVblank) return;
   uint64_t behind = (now - g_nextVblank) / kVblankUs + 1;
   g_vcount += behind;
+  profile().skipped += behind - 1;
   g_nextVblank += behind * kVblankUs;
   if (intr_handlers_registered(kIntrVblank)) dispatch_intr(kIntrVblank);
 }

@@ -104,7 +104,14 @@ void run_list(List& l) {
     host.cb = it->second;
     host.have = true;
   }
-  switch (g_gpu.run(l.ctx, &host)) {
+  ProfileCounters& pf = profile();
+  uint64_t t0 = pf.enabled ? now_us() : 0;
+  ge::Stop stop = g_gpu.run(l.ctx, &host);
+  if (pf.enabled) {
+    pf.geUs += now_us() - t0;
+    ++pf.geLists;
+  }
+  switch (stop) {
     case ge::Stop::Stalled: l.state = kStalling; break;
     case ge::Stop::Paused: l.state = kPaused; break;
     case ge::Stop::Ended: l.state = kCompleted; break;

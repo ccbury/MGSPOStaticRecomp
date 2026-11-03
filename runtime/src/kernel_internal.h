@@ -141,6 +141,13 @@ void display_service();            // delivers vblank interrupts that are due
 uint64_t display_next_event_us();  // UINT64_MAX when nothing is waiting
 uint64_t display_next_vblank_us(uint64_t after);
 uint32_t display_vcount();
+// Frame-time profile (--profile): a summary line goes to stderr every few seconds.
+struct ProfileCounters {
+  bool enabled = false;
+  uint64_t geUs = 0, geLists = 0;
+  uint64_t presentUs = 0, presents = 0, flips = 0, skipped = 0;
+};
+ProfileCounters& profile();
 void register_display();
 void register_ctrl();
 void register_ge();
