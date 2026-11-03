@@ -311,7 +311,8 @@ int desktopMain(int argc, wchar_t** argv, int show) {
                        0, Revision, 20, 236, 845, 44);
   bool cached = fs::exists(g_context.build / L"mgspo-game.exe") && !g_context.state.get("built").empty();
   g_status = control(L"EDIT", cached ? L"Cached game found. Launch validates freshness before running." :
-      iso.empty() ? L"First run: choose an ISO, then Build / setup ISO." : L"Build needed: choose Build / setup ISO.",
+      iso.empty() ? L"First run: choose an ISO. Build includes all stages; reserve 20 GiB and time for a long first build." :
+      L"Build needed: Build / setup ISO includes all stages. One compiler job; the first build can take tens of minutes or longer.",
       ES_READONLY | ES_MULTILINE, Status, 20, 286, 845, 54);
   g_log = control(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL, Log, 20, 350, 845, 290);
   g_output = [](const wstring& text) {

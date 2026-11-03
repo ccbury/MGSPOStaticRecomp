@@ -136,8 +136,13 @@ Known simplifications:
 
 - GE rendering is implemented against synthetic lists only (`docs/ge.md`); it has not been checked
   against the real game yet.
-- The per-stage PRXs and encrypted helper modules (`libfont` etc.) are not lifted. Net libraries
-  return an error. ATRAC3+ is decoded natively (see [audio.md](audio.md)).
+- The launcher lifts all disc stage PRXs up front with `--stage-dir`; explicit `--stage` remains
+  available for partial manual builds. Directory inputs are recursively sorted, deduplicated and
+  validated; encrypted/invalid stage files fail instead of being silently omitted. A successful
+  emission writes `stages.manifest` with the exact stage and `_zar` content identities. A complete
+  generated build is not proof of runtime coverage for every overlay. Encrypted helper modules
+  (`libfont` etc.) still use the existing HLE path. Net libraries return an error. ATRAC3+ is
+  decoded natively (see [audio.md](audio.md)).
 - Naming NIDs (output uses `module:NID`).
 - Function boundary detection is heuristic; 142 code words are not covered by any function
   (the gaps between import stubs and the code around them have not been inspected yet).

@@ -153,6 +153,11 @@ endif()
 option(MGSPO_BUILD_TESTS "Build unit tests" ON)
 if(MGSPO_BUILD_TESTS)
   enable_testing()
+  add_executable(mgspo-stage-tests tests/test_stage_inventory.cpp)
+  add_test(NAME mgspo-stage-tests COMMAND mgspo-stage-tests)
+  add_test(NAME mgspo-stage-cli COMMAND ${CMAKE_COMMAND}
+           "-DLIFTER=$<TARGET_FILE:mgspo-lift>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/stage-cli-fixture"
+           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_stage_cli.cmake")
   add_executable(mgspo-profile-tests tests/test_profile.cpp)
   target_include_directories(mgspo-profile-tests PRIVATE runtime/src runtime/include)
   add_test(NAME mgspo-profile-tests COMMAND mgspo-profile-tests)

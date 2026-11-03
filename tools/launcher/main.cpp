@@ -20,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "../stage_inventory.h"
 
 namespace fs = std::filesystem;
 using std::string;
@@ -311,10 +312,6 @@ struct OperationLock {
   ~OperationLock() { release(); }
 };
 
-// Stage modules lifted by default, relative to PSP_GAME/USRDIR/stage.
-const char* kDefaultStages[] = {"init/init.prx",       "r_main01/r_main01.prx", "r_main02/r_main02.prx",
-                                "r_net01/r_net01.prx", "gsmenu/gsmenu.prx",     "title/title.prx",
-                                "flashdemo/flashdemo.prx", "st04vo/st04vo.prx"};
 const char* kHelpers[] = {"zlibdec.prx", "kjfs.prx", "sound2.prx"};
 
 string fileStamp(const fs::path& p) {
@@ -505,28 +502,8 @@ fs::path toolExe(const Ctx& c, const wchar_t* name) {
   return p;
 }
 
-std::vector<string> splitList(const string& s) {
-  std::vector<string> r;
-  std::stringstream ss(s);
-  string item;
-  while (std::getline(ss, item, ';'))
-    if (!item.empty()) r.push_back(item);
-  return r;
-}
-
-string joinList(const std::vector<string>& v) {
-  string r;
-  for (auto& s : v) r += (r.empty() ? "" : ";") + s;
-  return r;
-}
-
-// Default stages plus any the game asked for in earlier runs.
-std::vector<string> stageList(const Ctx& c) {
-  std::vector<string> r;
-  for (auto s : kDefaultStages) r.push_back(s);
-  for (auto& s : splitList(c.state.get("extra_stages")))
-    if (std::find(r.begin(), r.end(), s) == r.end()) r.push_back(s);
-  return r;
+std::vector<fs::path> stageList(const Ctx& c) {
+  return mgspo::stages::enumerate(c.disc / L"PSP_GAME" / L"USRDIR" / L"stage");
 }
 
 string isoId(const Ctx& c) { return toUtf8(c.iso.wstring()) + "|" + fileStamp(c.iso); }
@@ -540,9 +517,22 @@ string sourceRevision(const Ctx& c) {
   return revision;
 }
 
-string liftStamp(const Ctx& c) {
-  return isoId(c) + "|" + joinList(stageList(c)) + "|" + fileStamp(toolExe(c, L"mgspo-lift.exe")) +
+string stageFingerprint(const string& manifest) {
+  uint64_t hash = 14695981039346656037ull;
+  for (unsigned char ch : manifest) { hash ^= ch; hash *= 1099511628211ull; }
+  return "all-stages-v1:" + std::to_string(hash);
+}
+
+string liftStamp(const Ctx& c, const string& manifest) {
+  return isoId(c) + "|" + stageFingerprint(manifest) + "|" + fileStamp(toolExe(c, L"mgspo-lift.exe")) +
          "|" + sourceRevision(c);
+}
+
+string liftStamp(const Ctx& c) { return liftStamp(c, mgspo::stages::manifest(stageList(c))); }
+
+bool liftOutputsMatch(const Ctx& c, const string& manifest) {
+  return fs::is_regular_file(c.gen / L"tables.h") && fs::is_regular_file(c.gen / L"tables.cpp") &&
+         mgspo::stages::matches(c.gen / L"stages.manifest", manifest);
 }
 
 string buildStamp(const Ctx& c) {
@@ -634,10 +624,19 @@ void validateIso(Ctx& c) {
   say(L"  ULUS10202 - Metal Gear Solid: Portable Ops, ok");
 }
 
+void requireBuildSpace(const Ctx& c) {
+  constexpr uintmax_t minimum = 12ull * 1024 * 1024 * 1024;
+  auto available = fs::space(c.work).available;
+  if (available < minimum)
+    die(L"All-stage setup needs at least 12 GiB free on the work drive before each uncached step. "
+        L"Free space or choose --work on a larger drive. Saves were not removed.");
+}
+
 void stepExtract(Ctx& c) {
   if (c.state.get("extracted") == isoId(c) && fs::exists(c.boot / L"boot.elf") &&
       fs::exists(c.disc / L"PSP_GAME" / L"USRDIR"))
     return say(L"[1-2/4] Disc already extracted (cached)");
+  requireBuildSpace(c);
   validateIso(c);
   say(L"[2/4] Extracting disc files (about 1.3 GB, this takes a minute)");
   c.state.erase("extracted");
@@ -660,11 +659,16 @@ void stepExtract(Ctx& c) {
 }
 
 void stepLift(Ctx& c, bool force) {
-  if (!force && c.state.get("lifted") == liftStamp(c) && fs::exists(c.gen))
-    return say(L"[3/4] Recompiled code is up to date (cached)");
   auto stages = stageList(c);
+  const string manifest = mgspo::stages::manifest(stages);
+  const string stamp = liftStamp(c, manifest);
+  if (!force && c.state.get("lifted") == stamp && liftOutputsMatch(c, manifest))
+    return say(L"[3/4] Recompiled code is up to date (cached)");
+  requireBuildSpace(c);
   say(L"[3/4] Lifting boot.elf, " + std::to_wstring(std::size(kHelpers)) + L" helper modules and " +
-      std::to_wstring(stages.size()) + L" stage modules to C++");
+      std::to_wstring(stages.size()) + L" stage modules to C++ (complete disc inventory)");
+  say(L"  All stages are built up front. Expect hundreds of MB of generated C++ and a long first build; "
+      L"compilation uses one job. See lift.log/build.log for progress.");
   c.state.erase("lifted");
   c.state.erase("built");
   c.state.save();
@@ -677,29 +681,26 @@ void stepLift(Ctx& c, bool force) {
     args.push_back(L"--helper");
     args.push_back((usr / L"modules" / h).wstring());
   }
-  for (auto& s : stages) {
-    fs::path p = usr / L"stage" / fs::path(toWide(s));
-    if (!fs::exists(p)) {
-      warn(L"stage module not on disc, skipping: " + p.wstring());
-      continue;
-    }
-    args.push_back(L"--stage");
-    args.push_back(p.wstring());
-  }
+  args.push_back(L"--stage-dir");
+  args.push_back((usr / L"stage").wstring());
   fs::path log = c.logs / L"lift.log";
   fs::remove(log, ec);
   if (runProcess(toolExe(c, L"mgspo-lift.exe").wstring(), args, {}, log, nullptr) != 0)
     die(L"lifting failed, see " + log.wstring());
-  c.state.set("lifted", liftStamp(c));
+  if (!liftOutputsMatch(c, manifest) || mgspo::stages::manifest(stageList(c)) != manifest)
+    die(L"Completed lift inventory is missing or stage inputs changed during lifting. No successful cache recorded.");
+  c.state.set("lifted", stamp);
   c.state.save();
 }
 
 void stepBuild(Ctx& c, bool force) {
   fs::path game = c.build / L"mgspo-game.exe";
+  const string stamp = buildStamp(c);
   bool cacheMatches = buildCacheMatches(c);
-  if (!force && cacheMatches && c.state.get("built") == buildStamp(c) && fs::exists(game))
+  if (!force && cacheMatches && c.state.get("built") == stamp && fs::exists(game))
     return say(L"[4/4] Game executable is up to date (cached)");
-  say(L"[4/4] Building the game (the first build compiles a lot of generated code and can take a long while)");
+  requireBuildSpace(c);
+  say(L"[4/4] Building all stages with one compiler job (the first full build can take tens of minutes or longer)");
   c.state.erase("built");
   c.state.save();
   setupToolchain();
@@ -720,32 +721,11 @@ void stepBuild(Ctx& c, bool force) {
   rc = runProcess(L"cmake.exe", {L"--build", c.build.wstring(), L"--target", L"mgspo-game", L"--parallel", L"1"}, {}, log, nullptr);
   if (rc != 0) die(L"build failed, see " + log.wstring());
   if (!fs::exists(game)) die(L"build finished but " + game.wstring() + L" is missing");
-  c.state.set("built", buildStamp(c));
+  if (buildStamp(c) != stamp || !liftOutputsMatch(c, mgspo::stages::manifest(stageList(c))))
+    die(L"Stage inputs, generated inventory, tools or source revision changed during compilation. "
+        L"No successful build cache recorded; run Build again.");
+  c.state.set("built", stamp);
   c.state.save();
-}
-
-// Maps a "not lifted" log entry (disc path and file size) to a stage path relative to USRDIR/stage.
-string stageFromLog(const Ctx& c, const string& path, uintmax_t size) {
-  string p = path;
-  std::replace(p.begin(), p.end(), '\\', '/');
-  string low = p;
-  std::transform(low.begin(), low.end(), low.begin(), [](unsigned char ch) { return static_cast<char>(tolower(ch)); });
-  const string key = "/usrdir/stage/";
-  auto pos = low.find(key);
-  fs::path stageRoot = c.disc / L"PSP_GAME" / L"USRDIR" / L"stage";
-  std::error_code ec;
-  if (pos != string::npos) {
-    string rel = p.substr(pos + key.size());
-    if (fs::exists(stageRoot / fs::path(toWide(rel)), ec)) return rel;
-  }
-  if (size) {
-    for (auto it = fs::recursive_directory_iterator(stageRoot, ec); !ec && it != fs::recursive_directory_iterator();
-         it.increment(ec)) {
-      if (it->is_regular_file() && lower(it->path().extension().wstring()) == L".prx" && it->file_size() == size)
-        return toUtf8(fs::relative(it->path(), stageRoot).generic_wstring());
-    }
-  }
-  return {};
 }
 
 void ensureBuilt(Ctx& c, bool forceLift) {
@@ -772,7 +752,7 @@ std::vector<wstring> gameArguments(const Ctx& c) {
   return args;
 }
 
-int launchGame(Ctx& c, std::set<string>& unlifted) {
+int launchGame(Ctx& c) {
   std::error_code ec;
   fs::create_directories(c.save, ec);
   auto args = gameArguments(c);
@@ -780,48 +760,19 @@ int launchGame(Ctx& c, std::set<string>& unlifted) {
   fs::remove(log, ec);
   return runProcess((c.build / L"mgspo-game.exe").wstring(), args, c.work, log, [&](const string& l) {
     // "[module] load <path> -> <id> (not lifted: <n> bytes, hash ...)"
-    const string head = "[module] load ";
-    auto p = l.find("(not lifted:");
-    if (p == string::npos || l.compare(0, head.size(), head) != 0) return;
-    auto arrow = l.find(" -> ");
-    string path = arrow == string::npos ? string() : l.substr(head.size(), arrow - head.size());
-    uintmax_t size = std::strtoull(l.c_str() + p + 12, nullptr, 10);
-    string rel = stageFromLog(c, path, size);
-    if (!rel.empty()) unlifted.insert(rel);
-    else warn(L"game loaded an unlifted module that is not a stage: " + toWide(path));
+    if (l.find("(not lifted:") != string::npos)
+      warn(L"A module is not in the completed all-stage build. See game.log; automatic stage guessing/relaunch is disabled.");
   });
 }
 
 int cmdRun(Ctx& c) {
   resolveIso(c);
   ensureBuilt(c, false);
-  for (int round = 0;; ++round) {
-    say(L"Starting the game (saves are kept in " + c.save.wstring() + L")");
-    std::set<string> missing;
-    int rc = launchGame(c, missing);
-    auto extra = splitList(c.state.get("extra_stages"));
-    auto all = stageList(c);
-    bool added = false;
-    for (auto& m : missing) {
-      if (std::find(all.begin(), all.end(), m) != all.end()) continue;
-      say(L"The game asked for a stage that is not lifted yet: " + toWide(m));
-      extra.push_back(m);
-      added = true;
-    }
-    if (!added) {
-      say(rc == 0 ? wstring(L"Game exited.")
-                  : L"Game exited with code " + std::to_wstring(rc) + L". Log: " + (c.logs / L"game.log").wstring());
-      return rc;
-    }
-    c.state.set("extra_stages", joinList(extra));
-    c.state.save();
-    if (rc == 0 || c.opt.noRelaunch || round >= 5) {
-      say(L"Added to the stage list; the next run will lift and rebuild automatically.");
-      return rc;
-    }
-    say(L"Lifting the new stage(s), rebuilding and relaunching...");
-    ensureBuilt(c, false);
-  }
+  say(L"Starting the game (saves are kept in " + c.save.wstring() + L")");
+  int rc = launchGame(c);
+  say(rc == 0 ? wstring(L"Game exited.")
+              : L"Game exited with code " + std::to_wstring(rc) + L". Log: " + (c.logs / L"game.log").wstring());
+  return rc;
 }
 
 int cmdSetup(Ctx& c) {
@@ -881,11 +832,12 @@ int cmdStatus(Ctx& c) {
   if (!iso.empty() && !c.exeDir.empty()) {
     c.iso = fs::path(toWide(iso));
     say(L"extracted: " + wstring(c.state.get("extracted") == isoId(c) ? L"yes" : L"no"));
-    say(L"lifted   : " + wstring(c.state.get("lifted") == liftStamp(c) ? L"yes" : L"no"));
-    say(L"built    : " + wstring(buildCacheMatches(c) && c.state.get("built") == buildStamp(c) ? L"yes" : L"no"));
+    bool haveStages = fs::is_directory(c.disc / L"PSP_GAME" / L"USRDIR" / L"stage");
+    bool lifted = haveStages && c.state.get("lifted") == liftStamp(c) &&
+                  liftOutputsMatch(c, mgspo::stages::manifest(stageList(c)));
+    say(L"lifted   : " + wstring(lifted ? L"yes (all stages)" : L"no"));
+    say(L"built    : " + wstring(lifted && buildCacheMatches(c) && c.state.get("built") == buildStamp(c) ? L"yes" : L"no"));
   }
-  string extra = c.state.get("extra_stages");
-  if (!extra.empty()) say(L"extra stages: " + toWide(extra));
   return 0;
 }
 
@@ -904,15 +856,16 @@ void usage() {
       L"\n"
       L"options:\n"
       L"  --iso <file>      disc image (remembered for next time; a file picker opens if none is known)\n"
-      L"  --work <dir>      work directory (default %LOCALAPPDATA%\\MGSPO\\work; needs about 6 GB free)\n"
+      L"  --work <dir>      work directory (default %LOCALAPPDATA%\\MGSPO\\work; reserve 20 GiB)\n"
       L"  --source <dir>    project source tree (normally detected)\n"
       L"  --config <file>   alternate settings file\n"
       L"  --controls <modern|legacy>  input style (otherwise remembered setting)\n"
       L"  --prompts <original|modern> controller icons (original by default; identified menus only)\n"
-      L"  --no-relaunch     do not rebuild and restart when the game needs another stage\n"
+      L"  --no-relaunch     accepted for compatibility; all stages now build up front, with no auto-relaunch\n"
       L"  --saves / --all   extra things for clean\n"
       L"  -- <args>         everything after -- is passed to mgspo-game (for example --headless --timeout 60)\n"
       L"\n"
+      L"Setup/build/run include every disc stage; the first serialized full build can take a long time.\n"
       L"You can also drag an .iso onto the launcher.");
 }
 
