@@ -65,6 +65,7 @@ add_library(mgspo_rt STATIC
   runtime/src/threadman.cpp
   runtime/src/io.cpp
   runtime/src/display.cpp
+  runtime/src/game_controls.cpp
   runtime/src/ge.cpp
   runtime/src/gpu.cpp
   runtime/src/gpu_draw.cpp
@@ -139,6 +140,9 @@ if(MGSPO_BUILD_TESTS)
   add_executable(mgspo-runtime-tests tests/test_runtime.cpp)
   target_link_libraries(mgspo-runtime-tests PRIVATE mgspo_rt)
   add_test(NAME mgspo-runtime-tests COMMAND mgspo-runtime-tests)
+  add_executable(mgspo-controls-tests tests/test_controls.cpp)
+  target_link_libraries(mgspo-controls-tests PRIVATE mgspo_rt)
+  add_test(NAME mgspo-controls-tests COMMAND mgspo-controls-tests)
   add_executable(mgspo-vfpu-tests tests/test_vfpu.cpp)
   target_link_libraries(mgspo-vfpu-tests PRIVATE mgspo mgspo_rt)
   add_test(NAME mgspo-vfpu-tests COMMAND mgspo-vfpu-tests)

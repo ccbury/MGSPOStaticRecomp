@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -23,6 +24,7 @@
 static void usage(const char* prog);
 
 namespace psp { namespace k { void display_set_dump_path(const std::string& p); void display_set_auto_buttons(uint32_t mask); void display_set_press_script(const std::string& s); void display_set_profile(bool on); } }
+namespace psp { namespace k { void display_set_gamepad_script(const std::string& s); } }
 
 static void usage(const char* prog) {
   std::fprintf(stderr,
@@ -32,6 +34,9 @@ static void usage(const char* prog) {
                "  --modules directory with decrypted helper modules (e.g. libfont.prx) lifted via --helper\n"
                "  --save    directory backing ms0:/ (default: ./savedata)\n"
                "  --headless  no window or audio\n"
+               "  --controls <modern|legacy>  modern gamepad camera/weapons (default) or original PSP mapping\n"
+               "  --controls-trace  log native direct equipment selections\n"
+               "  --gamepad-press <script>  like --press, but gamepad PSP bits and right stick (up = negative Y)\n"
                "  --trace   log every import call\n"
                "  --report  write the list of imports that were called to a file\n"
                "  --ge-dump write every GE command that is executed to a file\n"
@@ -65,12 +70,22 @@ static void write_report(const std::string& path) {
 int main(int argc, char** argv) {
   std::string module, reportPath;
   int timeoutSec = 0;
+  bool modernControls = true, controlsTrace = false;
   psp::KernelConfig cfg;
   psp::GeDebugOptions geOpt;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     bool more = i + 1 < argc;
     if (a == "--disc" && more) cfg.discRoot = argv[++i];
+    else if (a == "--controls" && more) {
+      std::string mode = argv[++i];
+      if (mode != "modern" && mode != "legacy") {
+        std::fprintf(stderr, "invalid controls mode: %s (expected modern or legacy)\n", mode.c_str());
+        return 2;
+      }
+      modernControls = mode == "modern";
+    }
+    else if (a == "--controls-trace") controlsTrace = true;
     else if (a == "--save" && more) cfg.saveRoot = argv[++i];
     else if (a == "--iso" && more) cfg.discImage = argv[++i];
     else if (a == "--modules" && more) cfg.moduleDir = argv[++i];
@@ -92,6 +107,17 @@ int main(int argc, char** argv) {
     else if (a == "--auto-press" && more) psp::k::display_set_auto_buttons(static_cast<uint32_t>(std::strtoul(argv[++i], nullptr, 0)));
   else if (a == "--profile") psp::k::display_set_profile(true);
   else if (a == "--press" && more) psp::k::display_set_press_script(argv[++i]);
+    else if (a == "--gamepad-press" && more) {
+      try {
+        psp::k::display_set_gamepad_script(argv[++i]);
+      } catch (const std::invalid_argument& e) {
+        std::fprintf(stderr, "invalid gamepad script: %s\n", e.what());
+        return 2;
+      } catch (const std::out_of_range& e) {
+        std::fprintf(stderr, "gamepad script value out of range: %s\n", e.what());
+        return 2;
+      }
+    }
     else if (a == "--dump-frame" && more) psp::k::display_set_dump_path(argv[++i]);
     else if (module.empty() && a[0] != '-') module = a;
     else {
@@ -119,6 +145,9 @@ int main(int argc, char** argv) {
     psp::init_memory();
     psp::ge_set_debug(geOpt);
     psp::mem_write(img.base, img.mem.data(), img.mem.size());
+    if (modernControls && !kModernControlsSupported)
+      throw std::runtime_error("modern controls require the supported ULUS10202 lift; use --controls legacy");
+    psp::controls_init(modernControls, controlsTrace);
     uint32_t heap = (img.base + static_cast<uint32_t>(img.mem.size()) + 0xFFF) & ~0xFFFu;
     // helper modules are mapped at fixed addresses behind the main image, keep the heap clear of them
     for (size_t i = 0; i < kModuleCount; ++i)

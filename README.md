@@ -167,6 +167,18 @@ mgspo-game <boot.elf> [--disc <dir>] [--iso <file>] [--modules <dir>] [--save <d
 window (2x) with keyboard or XInput controls: arrows = d-pad, Z/X/A/S = cross/circle/square/triangle,
 Q/E = L/R, Enter = start, Right Shift = select, IJKL = analog stick.
 
+XInput gamepads use **modern controls** by default: left stick moves, right stick controls the
+gameplay camera, and the D-pad directly selects equipment using the game's existing directional
+weapon/item slots, without holding B. D-pad menu/dialog navigation and all other buttons remain
+unchanged. The right stick is inactive in menus. Keyboard mappings are unchanged, including the
+original Circle + arrows selection.
+
+Use `--controls legacy` to restore the original XInput mapping (D-pad camera, B + D-pad equipment,
+right stick unused), or `--controls modern` to select the default explicitly. Through the launcher:
+`mgspo-launcher run -- --controls legacy`. Manual builds must **re-lift** the main module with the
+updated lifter before rebuilding the game. See [docs/controls.md](docs/controls.md) for implementation
+details and input diagnostics.
+
 The game also reads the disc by raw sector (`sce_lbn0x<lba>_size0x<bytes>`), so pass `--iso` as well to serve those. `--modules` points at a folder of already decrypted modules; see [docs/boot-progress.md](docs/boot-progress.md).
 
 Every import the game calls without an implementation is logged once with its module and NID.

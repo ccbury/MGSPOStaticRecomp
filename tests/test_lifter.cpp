@@ -94,6 +94,41 @@ static void testEmit() {
   CHECK(b.find("c.r[2] = 0u + 0x00000007u;") != std::string::npos);
 }
 
+static void testControlHooks() {
+  PrxImage img;
+  img.base = 0x08804000;
+  img.mem.resize(0x00111000);
+  auto put = [&](uint32_t address, uint32_t word) {
+    std::memcpy(&img.mem[address - img.base], &word, 4);
+  };
+  for (auto signature : {std::pair<uint32_t, uint32_t>{0x0884072C, 0x27BDFFF0},
+                        {0x08840738, 0x00808021}, {0x0889814C, 0x27BDFFE0},
+                        {0x08898158, 0x2623CB64}, {0x0889742C, 0x27BDFFF0},
+                        {0x089142E0, 0x27BDFFF0}, {0x089142EC, 0x240500EE},
+                        {0x088B52F8, 0x27BDFFC0}})
+    put(signature.first, signature.second);
+  Program p;
+  p.img = &img;
+  CHECK(emitFunction(p, {0x0884072C, 0x08840730}).find("controls_guest_sample") != std::string::npos);
+  CHECK(emitFunction(p, {0x0889814C, 0x08898150}).find("controls_equipment") != std::string::npos);
+  for (auto entry : {std::pair<uint32_t, const char*>{0x08897440, "Equipment"},
+                     {0x089144C0, "Camera"}, {0x088B5BD0, "Gameplay"}}) {
+    put(entry.first, 0x8C820000);  // lw v0, 0(a0)
+    std::string body = emitFunction(p, {entry.first, entry.first + 4});
+    CHECK(body.find(std::string("ControlConsumer::") + entry.second) != std::string::npos);
+    CHECK(emitFunction(p, {entry.first, entry.first + 4}, nullptr, true).find("controls_") == std::string::npos);
+  }
+  put(0x08850000, 0x8C820000);
+  CHECK(emitFunction(p, {0x08850000, 0x08850004}).find("controls_") == std::string::npos);
+  for (uint32_t end : {0x088975CCu, 0x0889875Cu, 0x08914518u, 0x088B5BFCu}) {
+    put(end, 0x8C820000);
+    CHECK(emitFunction(p, {end, end + 4}).find("controls_") == std::string::npos);
+  }
+  put(0x0884072C, 0);
+  CHECK(emitFunction(p, {0x0889814C, 0x08898150}).find("controls_") == std::string::npos);
+  CHECK(emitFunction(p, {0x089144C0, 0x089144C4}).find("controls_") == std::string::npos);
+}
+
 static void testOps() {
   psp::Cpu c;
   psp::div(c, 7, 0);
@@ -217,6 +252,7 @@ int main() {
   testDiscovery();
   testMultiModule();
   testEmit();
+  testControlHooks();
   testOps();
   testMemory();
   testDispatch();
