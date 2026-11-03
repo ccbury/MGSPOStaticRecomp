@@ -81,10 +81,7 @@ const char* kKindName[] = {"lifted guest code", "GE (list execution, raster)", "
 Kind classify(const std::string& s) {
   if (s.rfind("f_", 0) == 0 || s.rfind("ovl_", 0) == 0) return kGuest;
   if (s.find("psp::ge::") != std::string::npos || s.find("Raster") != std::string::npos) return kGe;
-  if (s.find("Wait") != std::string::npos || s.find("Sleep") != std::string::npos || s.find("NtDelay") != std::string::npos ||
-      s.find("ZwWait") != std::string::npos || s.find("SwitchTo") != std::string::npos || s.find("Yield") != std::string::npos ||
-      s.find("condition_variable") != std::string::npos || s.find("ZwRemoveIoCompletion") != std::string::npos)
-    return kWait;
+  if (is_wait_symbol(s)) return kWait;
   return kOther;
 }
 

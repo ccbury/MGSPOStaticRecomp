@@ -143,9 +143,31 @@ uint64_t display_next_vblank_us(uint64_t after);
 uint32_t display_vcount();
 // Frame-time profile (--profile): a summary line goes to stderr every few seconds.
 struct ProfileCounters {
+  static constexpr uint64_t kVblankUs = 16683;
   bool enabled = false;
   uint64_t geUs = 0, geLists = 0;
   uint64_t presentUs = 0, presents = 0, flips = 0, skipped = 0;
+  uint64_t flipGap[6] = {};  // observed vblank intervals: 0, 1, 2, 3, 4, 5+
+  uint64_t flipIntervals = 0, flipIntervalUs = 0;
+  uint64_t vblankWaits = 0, vblankWaitUs = 0;
+  uint64_t lastFlipUs = 0;
+  bool hasLastFlip = false;
+
+  void record_flip(uint64_t now) {
+    ++flips;
+    if (!enabled) {
+      hasLastFlip = false;
+      return;
+    }
+    if (hasLastFlip) {
+      const uint64_t gap = now / kVblankUs - lastFlipUs / kVblankUs;
+      ++flipGap[gap < 5 ? gap : 5];
+      ++flipIntervals;
+      flipIntervalUs += now - lastFlipUs;
+    }
+    lastFlipUs = now;
+    hasLastFlip = true;
+  }
 };
 ProfileCounters& profile();
 void register_display();
