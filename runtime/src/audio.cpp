@@ -1,10 +1,11 @@
-// sceAudio. Channels queue stereo samples that a host audio thread mixes; blocking calls are paced by the clock.
+// sceAudio. Blocking output follows device consumption, or the clock when no device is available.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
-#include <deque>
 #include <mutex>
+#include <optional>
 
+#include "audio_buffer.h"
 #include "kernel_internal.h"
 #include "platform.h"
 
@@ -16,7 +17,6 @@ namespace {
 constexpr int kRate = 44100;
 constexpr int kChannels = 9;  // 0-7 normal, 8 for the SRC channel
 constexpr int kSrcChannel = 8;
-constexpr size_t kMaxQueuedFrames = kRate / 2;
 
 struct Channel {
   bool reserved = false;
@@ -25,7 +25,8 @@ struct Channel {
   int32_t volL = 0x8000, volR = 0x8000;
   uint32_t srcRate = kRate;
   uint64_t busyUntil = 0;
-  std::deque<int16_t> fifo;  // interleaved stereo
+  uint64_t generation = 0;
+  audio::OutputBuffer fifo;
   uint64_t queued = 0, missing = 0, dropped = 0, calls = 0;
   int32_t lastL = 0, lastR = 0, peak = 0;
 };
@@ -33,6 +34,8 @@ struct Channel {
 Channel g_ch[kChannels];
 std::mutex g_audioMutex;
 bool g_started = false;
+bool g_deviceActive = false;
+uint64_t g_nextGeneration = 1;
 const bool g_diagnostics = std::getenv("MGSPO_AUDIO_STATS") != nullptr;
 
 void mix(int16_t* out, uint32_t frames) {
@@ -40,14 +43,10 @@ void mix(int16_t* out, uint32_t frames) {
   for (uint32_t i = 0; i < frames; ++i) {
     int32_t l = 0, r = 0;
     for (auto& c : g_ch) {
-      if (c.fifo.size() < 2) {
+      if (!c.fifo.pop(l, r)) {
         if (g_diagnostics && c.reserved && c.calls) ++c.missing;
         continue;
       }
-      l += c.fifo[0];
-      r += c.fifo[1];
-      c.fifo.pop_front();
-      c.fifo.pop_front();
     }
     out[i * 2] = static_cast<int16_t>(std::clamp(l, -32768, 32767));
     out[i * 2 + 1] = static_cast<int16_t>(std::clamp(r, -32768, 32767));
@@ -62,7 +61,7 @@ void mix(int16_t* out, uint32_t frames) {
         if (c.calls)
           std::fprintf(stderr, "[audio] ch=%d rate=%u block=%u calls=%llu queued=%llu pending=%zu missing=%llu dropped=%llu mixed=%llu vol=%d/%d peak=%d\n",
                        i, c.srcRate, c.samples, (unsigned long long)c.calls, (unsigned long long)c.queued,
-                       c.fifo.size() / 2, (unsigned long long)c.missing, (unsigned long long)c.dropped,
+                       c.fifo.frames(), (unsigned long long)c.missing, (unsigned long long)c.dropped,
                        (unsigned long long)mixed, c.lastL, c.lastR, c.peak);
       }
     }
@@ -72,27 +71,39 @@ void mix(int16_t* out, uint32_t frames) {
 void ensure_started() {
   if (g_started) return;
   g_started = true;
-  plat::audio_start(kRate, mix);
+  g_deviceActive = plat::audio_start(kRate, mix);
 }
 
 bool valid(int ch) { return ch >= 0 && ch < kChannels && g_ch[ch].reserved; }
 
-// Queues a buffer and returns the clock time at which the previous one has finished playing.
-uint64_t queue(int ch, int32_t volL, int32_t volR, uint32_t buf) {
+// Returns the previous buffer's clock deadline for device-free pacing.
+std::optional<uint64_t> queue(int ch, int32_t volL, int32_t volR, uint32_t buf) {
   Channel& c = g_ch[ch];
   uint32_t n = c.samples;
+  const uint64_t converted = static_cast<uint64_t>(n) * kRate / c.srcRate;
+  if (n > 65536 || converted > audio::OutputBuffer::kMaxFrames) {
+    std::fprintf(stderr, "[audio] Output block exceeds bounded buffer: channel=%d samples=%u rate=%u.\n",
+                 ch, n, c.srcRate);
+    return std::nullopt;
+  }
   bool mono = (c.format & 0x10) != 0;
   uint32_t bytes = n * (mono ? 2 : 4);
   if (buf && n) {
     ptr(buf);
     ptr(buf + bytes - 1);
   }
-  uint32_t outFrames = static_cast<uint32_t>(static_cast<uint64_t>(n) * kRate / c.srcRate);
+  uint32_t outFrames = static_cast<uint32_t>(converted);
   {
     std::lock_guard<std::mutex> lk(g_audioMutex);
     ++c.calls;
     c.lastL = volL; c.lastR = volR;
-    if (buf && n && c.fifo.size() / 2 < kMaxQueuedFrames) {
+    if (g_deviceActive && buf && n) {
+      if (!c.fifo.can_append(outFrames)) {
+        c.dropped += outFrames;
+        std::fprintf(stderr, "[audio] Output queue full: channel=%d pending=%zu incoming=%u.\n",
+                     ch, c.fifo.frames(), outFrames);
+        return std::nullopt;
+      }
       c.queued += outFrames;
       for (uint32_t i = 0; i < outFrames; ++i) {
         uint32_t s = static_cast<uint32_t>(static_cast<uint64_t>(i) * c.srcRate / kRate);
@@ -104,10 +115,10 @@ uint64_t queue(int ch, int32_t volL, int32_t volR, uint32_t buf) {
           r = static_cast<int16_t>(lhu(buf + s * 4 + 2));
         }
         if (g_diagnostics) c.peak = std::max(c.peak, std::max(std::abs(l), std::abs(r)));
-        c.fifo.push_back(static_cast<int16_t>(std::clamp(l * volL / 0x8000, -32768, 32767)));
-        c.fifo.push_back(static_cast<int16_t>(std::clamp(r * volR / 0x8000, -32768, 32767)));
+        c.fifo.push(static_cast<int16_t>(std::clamp(l * volL / 0x8000, -32768, 32767)),
+                    static_cast<int16_t>(std::clamp(r * volR / 0x8000, -32768, 32767)));
       }
-    } else if (buf && n) c.dropped += outFrames;
+    }
   }
   uint64_t now = now_us();
   uint64_t start = std::max(c.busyUntil, now);
@@ -121,9 +132,29 @@ void out_common(Cpu& c, int ch, int32_t l, int32_t r, uint32_t buf, bool block) 
     return ret(c, E_ERROR);
   }
   ensure_started();
-  uint64_t start = queue(ch, l, r, buf);
+  auto start = queue(ch, l, r, buf);
+  if (!start) return ret(c, E_ERROR);
   uint32_t n = g_ch[ch].samples;
-  if (block && start > now_us()) sleep_until(c, start, false);
+  const uint64_t generation = g_ch[ch].generation;
+  if (block && g_deviceActive) {
+    // The device pulls 1024-frame chunks; retain a bounded lead across synchronous GE work.
+    const uint64_t deadline = now_us() + 1000000;
+    for (;;) {
+      {
+        std::lock_guard<std::mutex> lk(g_audioMutex);
+        if (!g_ch[ch].reserved || g_ch[ch].generation != generation) {
+          std::fprintf(stderr, "[audio] Channel %d changed during output wait.\n", ch);
+          return ret(c, E_ERROR);
+        }
+        if (buf ? !g_ch[ch].fifo.producer_waiting() : g_ch[ch].fifo.frames() == 0) break;
+      }
+      if (now_us() >= deadline) {
+        std::fprintf(stderr, "[audio] Output device did not drain channel %d within one second.\n", ch);
+        return ret(c, E_ERROR);
+      }
+      sleep_until(c, now_us() + 1000, false);
+    }
+  } else if (block && *start > now_us()) sleep_until(c, *start, false);
   ret(c, n);
 }
 
@@ -139,6 +170,7 @@ void h_reserve(Cpu& c) {
   }
   if (ch < 0 || ch >= kSrcChannel || g_ch[ch].reserved) return ret(c, E_ERROR);
   g_ch[ch] = Channel{};
+  g_ch[ch].generation = g_nextGeneration++;
   g_ch[ch].reserved = true;
   g_ch[ch].samples = arg(c, 1);
   g_ch[ch].format = arg(c, 2);
@@ -174,6 +206,10 @@ void h_output_panned(Cpu& c) {
 void h_rest_len(Cpu& c) {
   int ch = static_cast<int>(arg(c, 0));
   if (!valid(ch)) return ret(c, E_ERROR);
+  if (g_deviceActive) {
+    std::lock_guard<std::mutex> lk(g_audioMutex);
+    return ret(c, static_cast<uint32_t>(g_ch[ch].fifo.frames()));
+  }
   uint64_t now = now_us();
   uint64_t left = g_ch[ch].busyUntil > now ? g_ch[ch].busyUntil - now : 0;
   ret(c, static_cast<uint32_t>(left * kRate / 1000000));
@@ -208,6 +244,7 @@ void h_src_reserve(Cpu& c) {
   std::lock_guard<std::mutex> lk(g_audioMutex);
   Channel& ch = g_ch[kSrcChannel];
   ch = Channel{};
+  ch.generation = g_nextGeneration++;
   ch.reserved = true;
   ch.samples = arg(c, 0);
   ch.srcRate = arg(c, 1) ? arg(c, 1) : kRate;

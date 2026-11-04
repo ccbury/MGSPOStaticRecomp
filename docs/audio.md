@@ -56,6 +56,84 @@ intervals with no queue-cap drops. Slowdown-related starvation is not fixed by i
 Late heavy comic panels also underfeed the mixer; the cache fix does not eliminate general
 software-renderer slowdown or certify audio against a retail listening/synchronization reference.
 
+## Device-paced host buffering
+
+The output HLE formerly rebased each channel's next-buffer deadline to the
+current wall clock after a late submission. The game supplies 256-frame
+blocks (5.8 ms), while Windows pulls 1,024-frame chunks. Synchronous GE work
+can prevent the guest sound thread from running for tens of milliseconds.
+Rebasing its deadline on each return prevents the producer from replenishing
+lost queue depth, even when the game meets its requested frame cadence.
+The host then inserts silence between otherwise valid PCM blocks; this is
+separate from codec decoding and the comic bank-loading failure.
+
+With an active audio device, blocking output now follows actual FIFO
+consumption, yielding the guest CPU while more than 2,048 output frames
+remain. This permits approximately 46 ms of host-side lead, plus the
+currently submitted block, to absorb short rendering/scheduling gaps.
+Windows still has its existing four 1,024-frame device buffers. This is
+deliberate additional host buffering/latency, not cycle-exact PSP audio
+hardware emulation or proof of retail-perfect audio/video synchronization.
+Sample order, sample rate, volume conversion, codec output and simulation
+timing are unchanged. Null-buffer blocking calls drain the channel; remaining
+length queries report the unconsumed FIFO when a device is active.
+
+Without a device (including ordinary headless runs), the original clock
+pacing remains, without retaining samples that cannot be consumed. A channel
+reset/re-reservation cancels an outstanding device wait. A device that fails
+to drain for one second returns an explicit logged error rather than hanging
+forever. Each FIFO is bounded to 22,050 stereo output frames (88,200 payload
+bytes, excluding container overhead). Oversized blocks and full queues now
+return a logged error instead of silently reporting a dropped block as
+successful; blocks exceeding 65,536 input samples are also rejected before
+byte-size arithmetic.
+
+### Measured starvation and cadence
+
+Sequential Software 1x runs used two raster threads, isolated saves, mixed
+PCM capture, five-second screenshots and no sampling profiler. The same
+finite Start/Circle script through 33.333 seconds, followed by Cross-only at
+40 seconds, produced the image-confirmed prison cell with no later input.
+An independent 90-second unskipped-comic comparison used inputs only through
+21.333 seconds. Comic verification combined this change locally with the
+separate [async completion fix](https://github.com/ccbury/MGSPOStaticRecomp/pull/39);
+that fix is necessary for progression and is not duplicated here.
+
+| Active channel 3, matched mixed-frame interval | Clock-paced baseline | Device-paced |
+| --- | --- | --- |
+| Cell, approximately 46-55 seconds: missing / 405,504 frames | 125,952 (31.06%) | 768 (0.19%) |
+| Comic, approximately 76-86 seconds: missing / 450,560 frames | 211,456 (46.93%) | 0 |
+| Comic cumulative missing through about 89 seconds, including startup | 494,848 | 2,560 |
+
+No queue-cap drops or output errors occurred. The final standalone cell
+run's last profile window was 20.0 flips/s, its previously measured
+three-vblank target, with 680.3 GE ms per wall second. The matching baseline
+was also 20.0 flips/s with 672.2 GE ms/s: this is an audio-continuity fix, not
+a prison-rendering speedup. The final comic window was 29.7 flips/s versus
+28.2 in the earlier run, but this single pair does not isolate a general
+performance improvement.
+
+Local PCM checks corroborate the missing-frame counts: cell 45-55 second
+nonzero samples increased from 68.88% to 99.71%; comic 75-85 seconds from
+56.42% to 99.98%. Silence may also be intentional, so these percentages alone
+are not a correctness metric. The title 20-40 second capture was 99.99%
+nonzero with RMS 3941 and no clipped samples, and its later windows remained
+30.0 flips/s. Comic 35-45 seconds still contained about 0.037% clipped mixed
+samples in both runs. These are captured-output/statistical checks, not a
+listening comparison with a retail PSP. Long stalls can still underrun this
+bounded queue; the final comic capture retained a small number of late
+missing frames.
+
+Thirteen selected audio/runtime/controller/GE/raster/profile tests passed.
+Synthetic checks cover ordered stereo accumulation, empty/partial consumption,
+1,024-frame pulls, the exact producer lead boundary, overflow-safe capacity
+checks, headless output beyond the FIFO capacity and explicit oversized-block
+failure. Builds were serialized with `--parallel 1` and reused generated-stage
+objects. The final cell, comic and title runs exited normally, each below
+95 MB private bytes with at least 16.8 GB physical and 24.7 GB commit headroom.
+The ISO was read-only; shared outputs/saves were untouched, and captures
+remain local.
+
 ## Local output diagnostics
 
 On Windows, set `MGSPO_AUDIO_DUMP_RAW` to a local output file to capture the samples submitted to
