@@ -93,7 +93,7 @@ void run(Job& job) {
           (!c.sizes[1] || x > c.sizes[1] || uint64_t(c.sizes[1]) * y > job.depth.size())) ||
         ((c.features[0] & Texture) &&
           (!c.modes[0] || c.modes[0] > 1024 || !c.modes[1] || c.modes[1] > 1024 ||
-           uint64_t(c.modes[0]) * c.modes[1] > job.texture.size())))
+           uint64_t(c.features[1]) + uint64_t(c.modes[0]) * c.modes[1] > job.texture.size())))
       throw std::runtime_error("Invalid hardware draw bounds/state; GPU submission refused.");
   }
   auto commands = std::move(job.commands);

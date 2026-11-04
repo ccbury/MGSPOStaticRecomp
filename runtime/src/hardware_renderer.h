@@ -21,7 +21,7 @@ struct alignas(16) Command {
   uint32_t registers[256]{};
   uint32_t sizes[4]{};
   int32_t clip[4]{};
-  uint32_t features[4]{};
+  uint32_t features[4]{};  // flags, immutable texture snapshot offset, reserved, reserved
   uint32_t modes[4]{};
   Vertex vertices[3]{};
   uint32_t bounds[4]{};
@@ -35,6 +35,7 @@ enum Feature : uint32_t {
 struct Job {
   std::vector<uint32_t> colour, depth, texture;
   std::vector<Command> commands;
+  uint32_t textureOffset = 0;  // copied into each newly recorded command, never read at execution
   // False transfer flags require a retained-target device and unchanged target dimensions.
   bool uploadTargets = true, readbackTargets = true;
 };

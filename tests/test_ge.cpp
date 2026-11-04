@@ -922,7 +922,7 @@ static void test_all_resolution_scales() {
   ge::fast::set_mode(ge::fast::Mode::Fast);
 }
 
-static void test_hardware_workload(ge::hardware::Backend backend) {
+static void test_hardware_workload(ge::hardware::Backend backend, bool textures = false) {
   namespace s = ge::surface;
   ge::hardware::select(backend);
   s::set_scale(2);
@@ -933,11 +933,24 @@ static void test_hardware_workload(ge::hardware::Backend backend) {
   b.setup().add(cmd(0x9E, 0x088000)).add(cmd(0x9F, 0x040000 | 512));
   b.add(cmd(0x23, 1)).add(cmd(0xDE, 4)).add(cmd(0xE7, 0));
   b.add(cmd(0x21, 1)).add(cmd(0xDF, 2 | (3 << 4)));
+  if (textures) {
+    sw(kTex, 0x800000FF); sw(kTex + 4, 0x8000FF00);
+    b.add(cmd(0x1E, 1)).add(cmd(0xA8, 0x080000 | 1)).add(cmd(0xB8, 0))
+     .add(cmd(0xC3, 3)).add(cmd(0xC9, 3 | (1 << 8)));
+  }
   for (int i = 0; i < 128; ++i) {
     const uint32_t colour = 0x80000000 | uint32_t(i * 37) % 0xFFFFFF;
     const float z = 30000.0f - i * 10;
-    put_verts(kVerts + i * 32, {{colour, 0, 0, z}, {colour, 32, 32, z}});
-    b.vertex(kVerts + i * 32, kThroughCol).prim(6, 2);
+    if (textures) {
+      struct TV { float u, v; uint32_t colour; float x, y, z; };
+      const TV vertices[] = {{0, 0, 0xFFFFFFFF, 0, 0, z}, {1, 1, 0xFFFFFFFF, 32, 32, z}};
+      mem_write(kVerts + i * 64, vertices, sizeof vertices);
+      b.add(cmd(0xA0, (kTex + (i % 2) * 4) & 0xFFFFFF))
+       .vertex(kVerts + i * 64, kThroughCol | 3).prim(6, 2);
+    } else {
+      put_verts(kVerts + i * 32, {{colour, 0, 0, z}, {colour, 32, 32, z}});
+      b.vertex(kVerts + i * 32, kThroughCol).prim(6, 2);
+    }
   }
   b.finish();
   ge::Gpu g;
@@ -954,7 +967,7 @@ static void test_hardware_workload(ge::hardware::Backend backend) {
               (unsigned long long)ge::hardware::counters().uploads,
               (unsigned long long)ge::hardware::counters().readbacks);
   CHECK(lhu(kVram + 0x88000) == 28730);
-  CHECK(hash == 8046747391423423269ull);
+  CHECK(hash == (textures ? 17224076099910001445ull : 8046747391423423269ull));
   CHECK(ge::hardware::counters().submissions == 2);
   const uint64_t transfers = ge::hardware::retains_targets() ? 1 : 2;
   CHECK(ge::hardware::counters().uploads == transfers && ge::hardware::counters().readbacks == transfers);
@@ -1001,7 +1014,7 @@ static void test_hardware_batch_boundaries() {
   CHECK((host_pixel(colour, 0, 0) & 0xFFFFFF) == 0x00807F);
   CHECK(lw(kVram) == 0 && lhu(kVram + 0x100000) == 65535);  // GPU never changes guest bytes
 
-  // Changed decoded textures submit in order without reading back or reuploading the targets.
+  // Changed decoded textures share one submission using immutable offsets.
   auto textured = rectangle(0xFFFFFFFF, 0);
   textured.features[0] = h::Texture | h::Blend;
   textured.modes[0] = textured.modes[1] = 1;
@@ -1009,20 +1022,61 @@ static void test_hardware_batch_boundaries() {
   textured.registers[0xDF] = 2 | (3 << 4);
   auto before = h::counters().submissions;
   const auto transfers = h::counters();
-  s::hardware_draw(colour, {}, {0xFF0000FF}).commands.push_back(textured);
-  s::hardware_draw(colour, {}, {0x8000FF00}).commands.push_back(textured);
-  CHECK(h::counters().submissions == before + 1);
-  CHECK(h::counters().uploads == transfers.uploads + 1 && h::counters().readbacks == transfers.readbacks);
+  std::vector<uint32_t> mutableTexture{0xFF0000FF};
+  auto& redTexture = s::hardware_draw(colour, {}, mutableTexture);
+  textured.features[1] = redTexture.textureOffset;
+  redTexture.commands.push_back(textured);
+  mutableTexture[0] = 0x8000FF00;
+  auto& greenTexture = s::hardware_draw(colour, {}, mutableTexture);
+  textured.features[1] = greenTexture.textureOffset;
+  greenTexture.commands.push_back(textured);
+  auto& duplicate = s::hardware_draw(colour, {}, mutableTexture);
+  CHECK(duplicate.texture.size() == 2 && duplicate.textureOffset == textured.features[1]);
+  CHECK(h::counters().submissions == before);
+  CHECK(h::counters().uploads == transfers.uploads && h::counters().readbacks == transfers.readbacks);
   colour = s::acquire(kVram, 16, 3, 16);
   const auto texturePixel = host_pixel(colour, 0, 0);
-  CHECK(h::counters().submissions == before + 2 && (texturePixel & 0xFFFFFF) == 0x00807F);
+  CHECK(h::counters().submissions == before + 1 && (texturePixel & 0xFFFFFF) == 0x00807F);
   CHECK(h::counters().uploads == transfers.uploads + 1 && h::counters().readbacks == transfers.readbacks + 1);
+  {
+    const auto count = h::counters().submissions;
+    for (uint32_t i = 0; i < 65; ++i) {
+      auto& batch = s::hardware_draw(colour, {}, {0xFF000000 | i});
+      textured.features[1] = batch.textureOffset;
+      batch.commands.push_back(textured);
+      CHECK(batch.texture.size() <= 64);
+    }
+    CHECK(h::counters().submissions == count + 1);  // 64 immutable snapshots then bounded rollover
+    colour->refresh();
+    CHECK(h::counters().submissions == count + 2 && host_pixel(colour, 0, 0) == 0xFF000040);
+  }
+  {
+    const auto count = h::counters().submissions;
+    for (uint32_t i = 0; i < 5; ++i) {
+      std::vector<uint32_t> large(1024 * 1024, 0xFF000010 | i);
+      auto& batch = s::hardware_draw(colour, {}, std::move(large));
+      textured.features[1] = batch.textureOffset;
+      batch.commands.push_back(textured);
+      CHECK(batch.texture.size() <= 4 * 1024 * 1024 && batch.texture.capacity() <= 4 * 1024 * 1024);
+    }
+    CHECK(h::counters().submissions == count + 1);  // 16 MiB byte cap, independent of snapshot count
+    colour->refresh();
+    CHECK(host_pixel(colour, 0, 0) == 0xFF000014);
+  }
+  {
+    const auto count = h::counters().submissions;
+    bool rejected = false;
+    try { s::hardware_draw(colour, {}, std::vector<uint32_t>(4 * 1024 * 1024 + 1)); }
+    catch (const std::runtime_error&) { rejected = true; }
+    CHECK(rejected && h::counters().submissions == count);
+    s::flush_hardware();
+  }
 
   // A capacity/explicit submission may leave no commands for the later readback boundary.
   s::hardware_draw(colour, {}, {}).commands.push_back(rectangle(0xFFFF0000, 0));
   const auto deferred = h::counters();
   s::submit_hardware();
-  CHECK(h::counters().readbacks == deferred.readbacks && host_pixel(colour, 0, 0) == texturePixel);
+  CHECK(h::counters().readbacks == deferred.readbacks && host_pixel(colour, 0, 0) == 0xFF000014);
   colour->refresh();
   CHECK(h::counters().readbacks == deferred.readbacks + 1 && host_pixel(colour, 0, 0) == 0xFFFF0000);
 
@@ -1054,10 +1108,15 @@ static void test_hardware_batch_boundaries() {
   s::reset();
   CHECK(h::counters().submissions == before + 1 && s::allocated_bytes() == 0);
   colour = s::acquire(kVram, 16, 3, 16);
-  s::hardware_draw(colour, {}, {}).commands.push_back(red);
+  auto& oldTexture = s::hardware_draw(colour, {}, {0xFF0000FF});
+  textured.features[1] = oldTexture.textureOffset;
+  oldTexture.commands.push_back(textured);
+  auto& lastTexture = s::hardware_draw(colour, {}, {0xFF00FF00});
+  textured.features[1] = lastTexture.textureOffset;
+  lastTexture.commands.push_back(textured);
   const auto backend = h::selected();
   h::select(h::Backend::Software);
-  CHECK(host_pixel(colour, 0, 0) == 0xFFFFFFFF);
+  CHECK(host_pixel(colour, 0, 0) == 0xFF00FF00);
   h::select(backend);
 }
 
@@ -1119,8 +1178,9 @@ static void test_hardware_integration(ge::hardware::Backend backend) {
 
 int main(int argc, char** argv) {
   init_memory();
-  if (argc == 3 && std::strcmp(argv[2], "--batch-workload") == 0) {
-    test_hardware_workload(ge::hardware::parse(argv[1]));
+  if (argc == 3 && (std::strcmp(argv[2], "--batch-workload") == 0 ||
+                    std::strcmp(argv[2], "--texture-workload") == 0)) {
+    test_hardware_workload(ge::hardware::parse(argv[1]), std::strcmp(argv[2], "--texture-workload") == 0);
     return g_failures ? 1 : 0;
   }
   if (argc == 2) {

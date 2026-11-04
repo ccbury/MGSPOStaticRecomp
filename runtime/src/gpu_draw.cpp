@@ -474,6 +474,7 @@ struct Raster {
         (clearC ? hardware::ClearColour : 0) | (clearA ? hardware::ClearAlpha : 0) |
         (clearZ && zb ? hardware::ClearDepth : 0) | (clipOn && !through ? hardware::ClipDepth : 0);
     packet.features[0] = flags;
+    packet.features[1] = gpuJob->textureOffset;
     packet.modes[0] = tW; packet.modes[1] = tH;
     packet.modes[2] = (tClampU ? 1 : 0) | (tClampV ? 2 : 0) | (tLinear ? 4 : 0) |
                       (tAlpha ? 8 : 0) | (tDouble ? 16 : 0);

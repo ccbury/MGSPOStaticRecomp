@@ -23,6 +23,8 @@ constexpr size_t kPlanes = 8;
 struct Pending {
   std::shared_ptr<Plane> colour, depth;
   hardware::Job job;
+  struct Snapshot { size_t offset, count; };
+  std::vector<Snapshot> snapshots;
 } g_pending;
 
 size_t cost(const Plane& p) { return p.native.size() + p.pixels.size(); }
@@ -224,13 +226,8 @@ void flush_hardware() {
 hardware::Job& hardware_draw(const std::shared_ptr<Plane>& colour,
                             const std::shared_ptr<Plane>& depth, std::vector<uint32_t> texture) {
   hardware::set_flush_callback(flush_hardware);
-  if (g_pending.colour != colour || g_pending.depth != depth ||
-      (!hardware::retains_targets() && g_pending.job.texture != texture))
+  if (g_pending.colour != colour || g_pending.depth != depth)
     flush_hardware();
-  if (g_pending.colour && g_pending.job.texture != texture) {
-    submit_hardware();
-    g_pending.job.texture = std::move(texture);
-  }
   if (!g_pending.colour) {
     const size_t entries = colour->pixels.size() / colour->bpp +
                            (depth ? depth->pixels.size() / depth->bpp : 1) + texture.size();
@@ -249,10 +246,36 @@ hardware::Job& hardware_draw(const std::shared_ptr<Plane>& colour,
     expand(*colour, g_pending.job.colour);
     if (depth) expand(*depth, g_pending.job.depth);
     else g_pending.job.depth.push_back(65535);
-    g_pending.job.texture = std::move(texture);
     g_pending.colour = colour;
     g_pending.depth = depth;
   }
-  return g_pending.job;
+  auto& job = g_pending.job;
+  job.textureOffset = 0;
+  if (texture.empty()) return job;
+  for (const auto& snapshot : g_pending.snapshots) {
+    if (snapshot.count == texture.size() &&
+        std::equal(texture.begin(), texture.end(), job.texture.begin() + snapshot.offset)) {
+      job.textureOffset = static_cast<uint32_t>(snapshot.offset);
+      return job;
+    }
+  }
+  const size_t targetEntries = job.colour.size() + job.depth.size();
+  const size_t maxTexels = std::min<size_t>((16u << 20) / sizeof(uint32_t),
+                                          (128u << 20) / sizeof(uint32_t) - targetEntries);
+  if (texture.size() > maxTexels)
+    throw std::runtime_error("Decoded hardware texture exceeds the bounded snapshot/job budget; select a lower internal scale.");
+  if (g_pending.snapshots.size() == 64 || job.texture.size() > maxTexels - texture.size()) {
+    submit_hardware();
+    job.texture.clear();
+    g_pending.snapshots.clear();
+  }
+  const size_t offset = job.texture.size();
+  const size_t required = offset + texture.size();
+  if (job.texture.capacity() < required)
+    job.texture.reserve(std::min(maxTexels, std::max(required, job.texture.capacity() * 2)));
+  job.texture.insert(job.texture.end(), texture.begin(), texture.end());
+  g_pending.snapshots.push_back({offset, texture.size()});
+  job.textureOffset = static_cast<uint32_t>(offset);
+  return job;
 }
 }  // namespace psp::ge::surface
