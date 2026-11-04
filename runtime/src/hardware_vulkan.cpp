@@ -255,6 +255,7 @@ class VulkanDevice final : public Device {
       failed_ = false;
       release(s); pending_.reset();
       ++counters.submissions; counters.dispatches += commands.size(); counters.primitives += job.commands.size();
+      ++counters.uploads; ++counters.readbacks;
     } catch (...) {
       if (!failed_) { release(s); pending_.reset(); }
       throw;

@@ -35,12 +35,18 @@ enum Feature : uint32_t {
 struct Job {
   std::vector<uint32_t> colour, depth, texture;
   std::vector<Command> commands;
+  // False transfer flags require a retained-target device and unchanged target dimensions.
+  bool uploadTargets = true, readbackTargets = true;
 };
-struct Counters { uint64_t submissions = 0, dispatches = 0, primitives = 0; };
+struct Counters {
+  uint64_t submissions = 0, dispatches = 0, primitives = 0;
+  uint64_t uploads = 0, readbacks = 0;
+};
 class Device {
  public:
   virtual ~Device() = default;
   virtual std::string description() const = 0;
+  virtual bool retains_targets() const { return false; }
   virtual void run(Job& job, Counters& counters) = 0;
 };
 std::unique_ptr<Device> create_d3d11();
@@ -49,8 +55,11 @@ std::unique_ptr<Device> create_vulkan();
 void select(Backend backend);
 Backend selected();
 bool built(Backend backend);
+bool retains_targets();
 Counters counters();
 void report();
+// Invoked on the GE thread before replacing/destroying the device.
+void set_flush_callback(void (*flush)());
 void run(Job& job);
 void reset();
 std::string probe(Backend backend);
