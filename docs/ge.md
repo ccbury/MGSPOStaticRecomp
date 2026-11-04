@@ -146,6 +146,41 @@ peaks can miss transients. The ISO and existing user saves were not modified.
 No game assets, lifted code, or captures are part of these measurements' source
 changes.
 
+### Controller sampling and requested cadence
+
+A later bounded Software 1x investigation directly sampled the prison pacing
+routine's configured base and dynamic threshold: both were three vblanks in the
+observed scene, approximately 19.98 Hz at the existing 59.94 Hz vblank clock.
+This does not establish a universal target for other scenes or adaptive states.
+The title sequence also has approximately 30-flip/s windows. Forcing 30/60 fps
+would change the guest's pacing rather than fix the measured shortfall.
+
+The controller HLE previously slept until another vblank on every positive or
+negative read, even when a new sample was already available. The
+[PSPSDK controller contract](https://pspdev.github.io/pspsdk/group__Ctrl.html)
+only blocks another read in the same sampling cycle. Positive and negative
+reads now share a consumed-cycle marker; peeks do not consume it. A blocked
+reader checks again after waking so another reader cannot consume the cycle
+twice. Display initialization resets this state. Sampling remains vblank-based;
+nonzero `sceCtrlSetSamplingCycle` intervals remain unimplemented.
+
+The correction removes a demonstrably unnecessary controller wait, not the
+game's own vblank waits, simulation steps or rendered frames. Deterministic
+cycle tests cover first/repeated reads, skipped cycles, 64-bit cycle values and
+reset; the existing firmware fixture exercises all four positive/negative
+read/peek paths. Twelve selected controller/runtime/GE/raster/profile tests
+passed, followed by a bounded 70-second Software 1x run with two raster workers.
+That run remained around 16-19 flips/s in later prison windows. Periodic
+Start/Circle input changed the mix of cell/menu scenes compared with the
+baseline, so this is not a controlled game-FPS speedup result. General slowdown
+remains unresolved.
+
+The run sampled a peak 91,402,240 private bytes, with at least 17,540,915,200
+physical and 25,005,457,408 commit bytes free. The runtime-only single-job build
+reused generated-stage objects. A repeated SIMD bilinear experiment was again
+discarded: its small fixture improved, but the scripted game's 17.200 versus
+17.225 flips/s did not demonstrate a meaningful end-to-end gain.
+
 ### Numbers (prison cell, same machine)
 
 | | before | after |
