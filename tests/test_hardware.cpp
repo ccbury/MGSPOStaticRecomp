@@ -51,6 +51,16 @@ int main(int argc, char** argv) {
       bool rejected = false;
       try { h::run(invalid); } catch (const std::runtime_error&) { rejected = true; }
       check(rejected && h::counters().submissions == count, "Invalid GPU bounds were not rejected before submission.");
+      invalid.texture = {0xFFFFFFFF};
+      command = triangle(1);
+      command.features[0] = h::Texture;
+      command.features[1] = UINT32_MAX;
+      command.modes[0] = command.modes[1] = 1;
+      invalid.commands = {command};
+      rejected = false;
+      try { h::run(invalid); } catch (const std::runtime_error&) { rejected = true; }
+      check(rejected && h::counters().submissions == count &&
+            invalid.commands[0].features[1] == UINT32_MAX, "Invalid texture snapshot offset reached the GPU.");
     }
     for (int scale = 1; scale <= 8; ++scale) {
       for (uint32_t format = 0; format < 4; ++format) {

@@ -39,7 +39,7 @@ int4 bytes(uint p) { return int4(p&255,(p>>8)&255,(p>>16)&255,p>>24); }
 uint texel(int2 p) {
   p.x=(modes.z&1)?clamp(p.x,0,(int)modes.x-1):(p.x&((int)modes.x-1));
   p.y=(modes.z&2)?clamp(p.y,0,(int)modes.y-1):(p.y&((int)modes.y-1));
-  return Texels[p.y*modes.x+p.x];
+  return Texels[features.y+p.y*modes.x+p.x];
 }
 int4 sampleTexture(float2 uv) {
   float2 p=uv*float2(modes.xy);

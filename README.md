@@ -143,31 +143,53 @@ The exact native **CPU pass still runs**, even at hardware 1x, to preserve guest
 The same explicit feedback/CPU/movie/alias fallbacks apply. Neither hardware selection nor a native
 fallback guarantees higher detail for every frame.
 
-Consecutive draws with the same colour/depth planes and decoded texture contents are batched
+Consecutive draws with the same colour/depth planes are batched
 in strict order, retaining per-draw depth/blend/scissor and other shader state. Host readback is
 deferred until presentation, explicit host-plane access, incompatible target changes,
 CPU/alias reseeding, reset or renderer replacement. Guest CPU reads still see the native pass
 immediately, never deferred GPU pixels. Decoded texture contents are compared, not just guest addresses,
-so changing a texture cannot reuse stale data. A texture change submits preceding commands with their
-old snapshot, then changes the texture without uploading or reading back the Direct3D targets.
+so changing a texture cannot reuse stale data. Each draw stores an offset into an immutable packed
+RGBA snapshot buffer shared by the existing Direct3D/Vulkan shader. Texture switches no longer
+require individual submits/fence waits or rebinding: ordered draws sample their own snapshots.
+At most 64 distinct snapshots and 16 MiB of snapshot pixels (including vector capacity) are retained;
+the byte limit shrinks further when necessary to stay within the combined 128 MiB job budget.
+At either limit, preceding commands complete a bounded submission before snapshots are recycled;
+Direct3D target pixels remain resident. A single oversized snapshot fails explicitly.
 At most 4096 primitives accumulate before bounded execution; each submission still waits at the
 64-tile limit, but Direct3D target pixels remain on the GPU across those fenced chunks.
 GPU colour/depth/staging resources persist across completed submissions in D3D11 and D3D12,
-rather than allocating per draw. Counters report target upload/readback pairs separately from dispatches.
-The prerequisite-gated, unverified Vulkan path does not yet support retained-target transfers;
-it keeps explicit bounded synchronous transfers rather than claiming this Direct3D optimization.
+rather than allocating per draw. Snapshots and API buffers remain alive through GPU completion,
+including the existing terminal-timeout retention policy. Reset/backend replacement flush pending work;
+there is no asynchronous cancellation path that frees in-flight texture storage.
+Counters report target upload/readback pairs separately from dispatches.
+The prerequisite-gated, unverified Vulkan path shares snapshot indexing but does not yet support
+retained-target transfers; it keeps explicit bounded synchronous transfers rather than claiming
+the Direct3D target-residency optimization.
 
 This reduces one measured 128-draw, 32x32 depth/blend fixture at 2x from 128 submissions to two
 with one target upload/readback pair and an identical host-image hash: D3D11 was about 1999 ms before
 batching versus 40..46 ms after; D3D12 about 457 ms versus 20 ms on an RTX 2070 SUPER. Reproduce with
 `mgspo-ge-tests d3d11 --batch-workload` or `d3d12 --batch-workload`. These are small-workload
 observations, not a game-speed comparison or a claim of being faster than Software.
-Texture/target switches, conversion, native rendering and synchronous bounded-chunk waits still
+`mgspo-ge-tests d3d11 --texture-workload` (or `d3d12`) exercises the same 128 ordered
+depth/blend rectangles with alternating texture snapshots; its native output and complete host-image
+hash must remain unchanged, and the final workload must use two 64-tile submissions, not 128.
+On the same RTX 2070 SUPER this alternating-texture fixture measured 2007.492 ms before versus
+48.367 ms after for D3D11, and 38.409 ms versus 26.485 ms for D3D12, with the same complete
+host hash (17224076099910001445) and one target upload/readback pair. These single-run timings
+measure this fixture, not general gameplay performance.
+Snapshot comparisons/copies, target switches, conversion, native rendering and synchronous bounded-chunk waits still
 cost time. Before batching, bounded prison observations were only about 0.5 flips/s with D3D11
 and 0.8..1.8 with D3D12 at 1x, and some 2x stage/fade intervals about 0.2.
 Latest bounded post-batching runs showed matching host/native PRISON pause menus at D3D11 1x and
 D3D12 2x. Late profiler intervals were around 1.1 flips/s and 5.0..6.2 flips/s respectively;
 these are different-scale/state smoke observations, not a controlled before/after game benchmark.
+After immutable snapshot batching, two sequential 90-second checks completed without renderer errors:
+D3D11 1x ended on a matching black host/native transition (not useful visual scene coverage);
+D3D12 2x produced a same-frame prison-cell host/native pair with matching scene content.
+Late profiler intervals were about 2.9..4.4 and 4.0..6.4 flips/s respectively, again not a
+controlled before/after scene benchmark. Small synthetic GPU fixtures cover scales 1x..8x;
+these smoke runs do not establish all-stage coverage or hardware usability.
 **Software remains recommended for playing** until broader hardware performance/correctness is established.
 Hardware mode expands packed colour/depth
 into 32-bit storage entries (including 16-bit guest formats). Upload arrays are bounded to 128 MiB
