@@ -10,8 +10,9 @@
 namespace {
 constexpr UINT kLog = WM_APP + 1, kDone = WM_APP + 2;
 enum { Iso = 101, Browse, Controls, SaveSettings, Launch, Build, Check, Update, Cancel, Restart,
-       Status, Log, Revision, Prompts, RenderScale, WindowSize };
-HWND g_window, g_iso, g_controls, g_prompts, g_scale, g_windowSize, g_status, g_log, g_revision;
+       Status, Log, Revision, Prompts, RenderScale, WindowSize, Renderer, CheckRenderer };
+HWND g_window, g_iso, g_controls, g_prompts, g_scale, g_windowSize, g_renderer, g_status, g_log, g_revision;
+constexpr const char* kRenderers[] = {"software", "d3d11", "d3d12", "vulkan"};
 constexpr const char* kWindowSizes[] = {"480x272", "960x544", "1440x816", "1920x1088"};
 std::thread g_worker;
 bool g_busy = false, g_closing = false;
@@ -53,7 +54,7 @@ void appendLog(const wstring& text) {
 }
 
 void buttons() {
-  for (int id : {Iso, Browse, Controls, Prompts, RenderScale, WindowSize, SaveSettings, Launch, Build, Check})
+  for (int id : {Iso, Browse, Controls, Prompts, RenderScale, WindowSize, Renderer, CheckRenderer, SaveSettings, Launch, Build, Check})
     EnableWindow(GetDlgItem(g_window, id), !g_busy && g_restart.empty());
   EnableWindow(GetDlgItem(g_window, Update), !g_busy && g_restart.empty() && !g_update.available.empty());
   EnableWindow(GetDlgItem(g_window, Restart), !g_busy && !g_restart.empty());
@@ -71,6 +72,9 @@ void readSettings() {
   if (scale < 0 || scale > 7 || size < 0 || size >= 4) die(L"Select an internal render scale and window size.");
   g_context.opt.renderScale = std::to_string(scale + 1);
   g_context.opt.windowSize = kWindowSizes[size];
+  LRESULT renderer = SendMessageW(g_renderer, CB_GETCURSEL, 0, 0);
+  if (renderer < 0 || renderer >= 4) die(L"Select a renderer.");
+  g_context.opt.renderer = kRenderers[renderer];
 }
 
 void persistSettings(Ctx& context) {
@@ -80,6 +84,7 @@ void persistSettings(Ctx& context) {
   context.config.set("prompts", context.opt.prompts);
   context.config.set("render_scale", context.opt.renderScale);
   context.config.set("window_size", context.opt.windowSize);
+  context.config.set("renderer", context.opt.renderer);
   context.config.set("work", toUtf8(context.work.wstring()));
   context.config.save();
 }
@@ -102,6 +107,7 @@ void startOperation(int id) {
   g_busy = true;
   g_cancel = false;
   SetWindowTextW(g_status, id == Launch ? L"Launching / game running - other operations are locked" :
+                      id == CheckRenderer ? L"Checking selected renderer, shader and GPU driver..." :
                       id == Check ? L"Checking GitHub main..." :
                       id == Update ? L"Updating and rebuilding locally..." : L"Building from ISO...");
   buttons();
@@ -117,7 +123,11 @@ void startOperation(int id) {
       lock.acquire(context.work);
       persistSettings(context);
       context.state.load(context.work / L"state.ini");
-      if (id == Check) {
+      if (id == CheckRenderer) {
+        result->status = L"Renderer available: " +
+            toWide(psp::ge::hardware::probe(psp::ge::hardware::parse(rendererOption(context))));
+        out(result->status + L"\n");
+      } else if (id == Check) {
         result->update = checkUpdates(context.source);
         result->checked = true;
         result->status = result->update.newer ? L"Update available. Review revisions, then choose Update / rebuild." :
@@ -157,6 +167,7 @@ void startDesktop(const fs::path& desktop, const Ctx& context) {
                 L" --work " + quoteArg(context.work.wstring());
   auto video = videoOptions(context);
   cmd += L" --render-scale " + toWide(video.first) + L" --window-size " + toWide(video.second);
+  cmd += L" --renderer " + toWide(rendererOption(context));
   STARTUPINFOW si{sizeof(si)};
   PROCESS_INFORMATION pi{};
   std::vector<wchar_t> text(cmd.begin(), cmd.end());
@@ -212,7 +223,7 @@ LRESULT CALLBACK desktopProc(HWND window, UINT message, WPARAM wparam, LPARAM lp
           SetWindowTextW(g_status, L"Settings saved. Launch checks source/build freshness before running.");
           return 0;
         }
-        case Launch: case Build: case Check: case Update: startOperation(LOWORD(wparam)); return 0;
+        case Launch: case Build: case Check: case Update: case CheckRenderer: startOperation(LOWORD(wparam)); return 0;
         case Cancel:
           if (MessageBoxW(window, L"Stop the active operation and its child processes? "
               L"This also stops a running game. Saves already written are kept.",
@@ -287,7 +298,7 @@ int desktopMain(int argc, wchar_t** argv, int show) {
   RegisterClassW(&cls);
   g_window = CreateWindowW(cls.lpszClassName, L"MGSPO - Portable Ops Launcher",
       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT,
-      900, 738, nullptr, nullptr, cls.hInstance, nullptr);
+      900, 786, nullptr, nullptr, cls.hInstance, nullptr);
   if (!g_window) die(L"Could not create launcher window.");
   control(L"STATIC", L"Metal Gear Solid: Portable Ops  |  Local build from your own US ISO", 0, 0, 20, 16, 850, 24);
   control(L"STATIC", L"ISO image", 0, 0, 20, 51, 90, 24);
@@ -326,22 +337,34 @@ int desktopMain(int argc, wchar_t** argv, int show) {
     if (video.second == kWindowSizes[i]) SendMessageW(g_windowSize, CB_SETCURSEL, i, 0);
   }
   control(L"STATIC", L"Next launch; cost grows with scale squared.", 0, 0, 610, 130, 255, 40);
-  control(L"STATIC", (L"Work / saves: " + g_context.work.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 174, 845, 23);
-  control(L"STATIC", (L"Source: " + g_context.source.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 199, 845, 23);
-  control(L"BUTTON", L"Launch game", WS_TABSTOP | BS_DEFPUSHBUTTON, Launch, 20, 236, 145, 35);
-  control(L"BUTTON", L"Build / setup ISO", WS_TABSTOP, Build, 175, 236, 155, 35);
-  control(L"BUTTON", L"Check updates", WS_TABSTOP, Check, 340, 236, 140, 35);
-  control(L"BUTTON", L"Update / rebuild", WS_TABSTOP, Update, 490, 236, 155, 35);
-  control(L"BUTTON", L"Cancel", WS_TABSTOP, Cancel, 655, 236, 90, 35);
-  control(L"BUTTON", L"Restart UI", WS_TABSTOP, Restart, 755, 236, 110, 35);
+  control(L"STATIC", L"Renderer", 0, 0, 20, 178, 95, 24);
+  g_renderer = control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, Renderer, 115, 174, 280, 150);
+  auto selectedRenderer = rendererOption(g_context);
+  const wchar_t* labels[] = {L"Software (default / reference)", L"Direct3D 11 (compute raster)", L"Direct3D 12 (compute raster)", L"Vulkan (compute raster)"};
+  for (int i = 0; i < 4; ++i) {
+    wstring label = labels[i];
+    if (!psp::ge::hardware::built(psp::ge::hardware::parse(kRenderers[i]))) label += L" - unavailable in build";
+    SendMessageW(g_renderer, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+    if (selectedRenderer == kRenderers[i]) SendMessageW(g_renderer, CB_SETCURSEL, i, 0);
+  }
+  control(L"BUTTON", L"Check GPU / driver", WS_TABSTOP, CheckRenderer, 415, 174, 180, 28);
+  control(L"STATIC", L"Hardware still retains the CPU native pass.", 0, 0, 610, 178, 255, 40);
+  control(L"STATIC", (L"Work / saves: " + g_context.work.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 222, 845, 23);
+  control(L"STATIC", (L"Source: " + g_context.source.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 247, 845, 23);
+  control(L"BUTTON", L"Launch game", WS_TABSTOP | BS_DEFPUSHBUTTON, Launch, 20, 284, 145, 35);
+  control(L"BUTTON", L"Build / setup ISO", WS_TABSTOP, Build, 175, 284, 155, 35);
+  control(L"BUTTON", L"Check updates", WS_TABSTOP, Check, 340, 284, 140, 35);
+  control(L"BUTTON", L"Update / rebuild", WS_TABSTOP, Update, 490, 284, 155, 35);
+  control(L"BUTTON", L"Cancel", WS_TABSTOP, Cancel, 655, 284, 90, 35);
+  control(L"BUTTON", L"Restart UI", WS_TABSTOP, Restart, 755, 284, 110, 35);
   g_revision = control(L"STATIC", L"Updates are manual. Check fetches main; Update stages a dedicated clone and rebuilds locally.",
-                       0, Revision, 20, 284, 845, 44);
+                       0, Revision, 20, 332, 845, 44);
   bool cached = fs::exists(g_context.build / L"mgspo-game.exe") && !g_context.state.get("built").empty();
   g_status = control(L"EDIT", cached ? L"Cached game found. Launch validates freshness before running." :
       iso.empty() ? L"First run: choose an ISO. Build includes all stages; reserve 20 GiB and time for a long first build." :
       L"Build needed: Build / setup ISO includes all stages. One compiler job; the first build can take tens of minutes or longer.",
-      ES_READONLY | ES_MULTILINE, Status, 20, 334, 845, 54);
-  g_log = control(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL, Log, 20, 398, 845, 290);
+      ES_READONLY | ES_MULTILINE, Status, 20, 382, 845, 54);
+  g_log = control(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL, Log, 20, 446, 845, 290);
   g_output = [](const wstring& text) {
     auto line = std::make_unique<wstring>(text);
     if (PostMessageW(g_window, kLog, 0, reinterpret_cast<LPARAM>(line.get()))) line.release();

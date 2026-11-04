@@ -177,6 +177,7 @@ fs::path performUpdate(Ctx& c, const UpdateInfo& expected, OperationLock& lock, 
                  {L"build", L"--iso", c.iso.wstring(), L"--work", c.work.wstring(),
                   L"--source", source.wstring(), L"--config", c.config.file.wstring(),
                   L"--controls", toWide(c.opt.controls),
+                  L"--renderer", toWide(rendererOption(c)),
                   L"--render-scale", toWide(video.first), L"--window-size", toWide(video.second),
                   L"--prompts", toWide(prompts)},
                  {}, c.logs / L"update-game.log", nullptr) != 0)

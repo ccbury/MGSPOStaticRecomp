@@ -11,6 +11,7 @@
 #include "gpu.h"
 #include "raster_fast.h"
 #include "render_surface.h"
+#include "hardware_renderer.h"
 
 namespace psp {
 namespace ge {
@@ -288,6 +289,7 @@ struct Raster {
   uint8_t* fb = nullptr;
   uint32_t fbAddr = 0, zAddr = 0;
   int rasterScale = 1;
+  std::unique_ptr<hardware::Job> gpuJob;
   uint32_t fbStride = 0;
   int fbFmt = 3, fbBpp = 4;
   uint8_t* zb = nullptr;
@@ -390,7 +392,7 @@ struct Raster {
   }
 
   template<class Draw> void render_both(Draw draw) {
-    if (surface::scale() == 1) { draw(*this); return; }
+    if (surface::scale() == 1 && hardware::selected() == hardware::Backend::Software) { draw(*this); return; }
     fast::sync();
     auto colour = surface::acquire(fbAddr, fbStride, fbFmt, sy2 + 1);
     auto depth = zb ? surface::acquire(zAddr, zStride, -1, sy2 + 1) : nullptr;
@@ -436,8 +438,92 @@ struct Raster {
     high.sx1 *= scale; high.sy1 *= scale;
     high.sx2 = (high.sx2 + 1) * scale - 1; high.sy2 = (high.sy2 + 1) * scale - 1;
     high.decide_fast();
+    if (hardware::selected() != hardware::Backend::Software) high.begin_gpu(*colour, depth.get());
     draw(high);
+    if (high.gpuJob) high.finish_gpu(*colour, depth.get());
     fast::sync();
+  }
+
+  void begin_gpu(const surface::Plane& colour, const surface::Plane* depth) {
+    gpuJob = std::make_unique<hardware::Job>();
+    auto expand = [](const std::vector<uint8_t>& input, int bpp, std::vector<uint32_t>& output) {
+      output.resize(input.size() / bpp);
+      if (bpp == 4) {
+        std::memcpy(output.data(), input.data(), input.size());
+        return;
+      }
+      for (size_t i = 0; i < output.size(); ++i) {
+        uint16_t pixel;
+        std::memcpy(&pixel, input.data() + i * 2, 2);
+        output[i] = pixel;
+      }
+    };
+    expand(colour.pixels, fbBpp, gpuJob->colour);
+    if (depth) expand(depth->pixels, 2, gpuJob->depth);
+    else gpuJob->depth.push_back(65535);
+    if (texOn) {
+      gpuJob->texture.resize(size_t(tW) * tH);
+      if (setup_fast()) {
+        if (fx.texRgba) std::copy(fx.texRgba, fx.texRgba + gpuJob->texture.size(), gpuJob->texture.begin());
+        else for (size_t i = 0; i < gpuJob->texture.size(); ++i) gpuJob->texture[i] = pal[fx.texIdx[i]];
+      } else {
+        for (int y = 0; y < tH; ++y)
+          for (int x = 0; x < tW; ++x) gpuJob->texture[size_t(y) * tW + x] = texel(x, y);
+      }
+    }
+  }
+  void finish_gpu(surface::Plane& colour, surface::Plane* depth) {
+    if (!gpuJob->commands.empty()) hardware::run(*gpuJob);
+    auto pack = [](const std::vector<uint32_t>& input, int bpp, std::vector<uint8_t>& output) {
+      if (bpp == 4) {
+        std::memcpy(output.data(), input.data(), output.size());
+        return;
+      }
+      for (size_t i = 0; i < input.size(); ++i) {
+        uint16_t pixel = static_cast<uint16_t>(input[i]);
+        std::memcpy(output.data() + i * 2, &pixel, 2);
+      }
+    };
+    pack(gpuJob->colour, fbBpp, colour.pixels);
+    if (depth) pack(gpuJob->depth, 2, depth->pixels);
+  }
+  void gpu_primitive(const SV& a, const SV& b, const SV& c, bool rectangle) {
+    if (gpuJob->commands.size() == 4096) {
+      hardware::run(*gpuJob);
+      gpuJob->commands.clear();
+    }
+    hardware::Command packet;
+    std::copy(r, r + 256, packet.registers);
+    packet.sizes[0] = fbStride; packet.sizes[1] = zStride; packet.sizes[2] = fbFmt; packet.sizes[3] = keepCache;
+    packet.clip[0] = sx1; packet.clip[1] = sy1; packet.clip[2] = sx2; packet.clip[3] = sy2;
+    uint32_t flags = (texOn ? hardware::Texture : 0) | (fogOn ? hardware::Fog : 0) |
+        (secondarySpec && lighting ? hardware::Specular : 0) | (atestOn ? hardware::AlphaTest : 0) |
+        (ctestOn ? hardware::ColourTest : 0) | (stestOn ? hardware::Stencil : 0) |
+        (ztestOn ? hardware::DepthTest : 0) | (blendOn ? hardware::Blend : 0) |
+        (logicOn ? hardware::Logic : 0) | (clear ? hardware::Clear : 0) |
+        (clearC ? hardware::ClearColour : 0) | (clearA ? hardware::ClearAlpha : 0) |
+        (clearZ && zb ? hardware::ClearDepth : 0) | (clipOn && !through ? hardware::ClipDepth : 0);
+    packet.features[0] = flags;
+    packet.modes[0] = tW; packet.modes[1] = tH;
+    packet.modes[2] = (tClampU ? 1 : 0) | (tClampV ? 2 : 0) | (tLinear ? 4 : 0) |
+                      (tAlpha ? 8 : 0) | (tDouble ? 16 : 0);
+    packet.modes[3] = rectangle ? 1 : 0;
+    const SV* input[] = {&a, &b, &c};
+    for (int i = 0; i < 3; ++i) {
+      auto& v = packet.vertices[i]; const auto& s = *input[i];
+      v.position[0] = s.x; v.position[1] = s.y; v.position[2] = s.z; v.position[3] = s.invw;
+      std::copy(s.col, s.col + 4, v.colour);
+      v.uvFog[0] = s.u; v.uvFog[1] = s.v; v.uvFog[2] = s.fog;
+      std::copy(s.spec, s.spec + 3, v.spec);
+    }
+    int x0 = std::max(sx1, static_cast<int>(std::floor(std::min({a.x, b.x, c.x}))));
+    int y0 = std::max(sy1, static_cast<int>(std::floor(std::min({a.y, b.y, c.y}))));
+    int x1 = std::min(sx2, static_cast<int>(std::ceil(std::max({a.x, b.x, c.x}))));
+    int y1 = std::min(sy2, static_cast<int>(std::ceil(std::max({a.y, b.y, c.y}))));
+    if (x0 > x1 || y0 > y1) return;
+    packet.bounds[0] = x0; packet.bounds[1] = y0;
+    packet.bounds[2] = x1 - x0 + 1; packet.bounds[3] = y1 - y0 + 1;
+    gpuJob->commands.push_back(packet);
   }
 
   size_t texture_span() const {
@@ -953,6 +1039,7 @@ struct Raster {
       std::swap(b, c);
       area = -area;
     }
+    if (gpuJob) { gpu_primitive(a, b, c, false); return; }
     if (use_fast()) {
       if (batch.add_tri(fv(a), fv(b), fv(c))) return;
     }
@@ -1021,6 +1108,7 @@ struct Raster {
   }
 
   void rect(const SV& a, const SV& b) {
+    if (gpuJob) { gpu_primitive(a, b, b, true); return; }
     float x0 = a.x, x1 = b.x, y0 = a.y, y1 = b.y;
     float u0 = a.u, u1 = b.u, v0 = a.v, v1 = b.v;
     if (x1 < x0) {
@@ -1078,6 +1166,15 @@ struct Raster {
       for (int k = 0; k < 4; ++k) col[k] = flat ? b.col[k] : a.col[k] + (b.col[k] - a.col[k]) * t;
       float z = a.z + (b.z - a.z) * t;
       float u = a.u + (b.u - a.u) * t, v = a.v + (b.v - a.v) * t;
+      if (gpuJob) {
+        SV first = a, last = a;
+        first.x = static_cast<float>(x); first.y = static_cast<float>(y);
+        last.x = static_cast<float>(x + rasterScale); last.y = static_cast<float>(y + rasterScale);
+        first.z = last.z = z; first.u = last.u = u; first.v = last.v = v;
+        std::copy(col, col + 4, first.col); std::copy(col, col + 4, last.col);
+        gpu_primitive(first, last, last, true);
+        continue;
+      }
       for (int oy = 0; oy < rasterScale; ++oy)
         for (int ox = 0; ox < rasterScale; ++ox) {
           if (clear) clear_pixel(x + ox, y + oy, z, col);
@@ -1090,6 +1187,13 @@ struct Raster {
     fast::sync();
     int x = static_cast<int>(std::floor(a.x / rasterScale)) * rasterScale;
     int y = static_cast<int>(std::floor(a.y / rasterScale)) * rasterScale;
+    if (gpuJob) {
+      SV first = a, last = a;
+      first.x = static_cast<float>(x); first.y = static_cast<float>(y);
+      last.x = static_cast<float>(x + rasterScale); last.y = static_cast<float>(y + rasterScale);
+      gpu_primitive(first, last, last, true);
+      return;
+    }
     for (int dy = 0; dy < rasterScale; ++dy)
       for (int dx = 0; dx < rasterScale; ++dx) {
         if (clear) clear_pixel(x + dx, y + dy, a.z, a.col);

@@ -10,6 +10,7 @@
 #include "gpu.h"
 #include "raster_fast.h"
 #include "render_surface.h"
+#include "hardware_renderer.h"
 #include <psp/video_settings.h>
 
 using namespace psp;
@@ -920,8 +921,68 @@ static void test_all_resolution_scales() {
   ge::fast::set_mode(ge::fast::Mode::Fast);
 }
 
-int main() {
+static void test_hardware_integration(ge::hardware::Backend backend) {
+  namespace s = ge::surface;
+  using Test = void (*)();
+  const Test cases[] = {test_clear_and_sprite, test_triangle_and_scissor, test_gouraud,
+    test_565, test_depth, test_blend, test_alpha_test, test_stencil, test_texture_8888,
+    test_texture_clut4_swizzled, test_texture_dxt1, test_transform_and_cull, test_projection_clip,
+    test_bezier, test_indexed_strip};
+  struct Image { std::vector<uint8_t> native, host; };
+  std::vector<Image> reference;
+  ge::fast::set_mode(ge::fast::Mode::Reference);
+  for (int pass = 0; pass < 2; ++pass) {
+    ge::hardware::select(pass ? backend : ge::hardware::Backend::Software);
+    for (size_t i = 0; i < std::size(cases); ++i) {
+      std::fprintf(stderr, "hardware GE pass=%d fixture=%zu\n", pass, i);
+      s::set_scale(2); s::reset();
+      s::NativeScope internal;
+      cases[i]();
+      auto plane = s::display(kVram, 512, i == 3 ? 0 : 3);
+      Image image;
+      if (plane) image.host = plane->pixels;
+      image.native.assign(ptr(kVram), ptr(kVram) + 2 * 512 * 272 * 4);
+      if (!pass) { reference.push_back(std::move(image)); continue; }
+      CHECK(image.native == reference[i].native);
+      CHECK(image.host.size() == reference[i].host.size());
+      if (!plane || image.host.size() != reference[i].host.size()) continue;
+      size_t bad = 0, covered = 0;
+      const int bpp = plane->bpp;
+      for (size_t pixel = 0; pixel < image.host.size() / bpp; ++pixel) {
+        uint32_t a = 0, b = 0;
+        std::memcpy(&a, image.host.data() + pixel * bpp, bpp);
+        std::memcpy(&b, reference[i].host.data() + pixel * bpp, bpp);
+        if (a || b) ++covered;
+        int delta = 0;
+        if (bpp == 2) {
+          for (int shift : {0, 5, 11})
+            delta = std::max(delta, std::abs(int((a >> shift) & (shift == 5 ? 63 : 31)) -
+                                           int((b >> shift) & (shift == 5 ? 63 : 31))) * 8);
+        } else {
+          for (int shift : {0, 8, 16, 24})
+            delta = std::max(delta, std::abs(int((a >> shift) & 255) - int((b >> shift) & 255)));
+        }
+        if (delta > 8) ++bad;
+      }
+      // Floating GPU interpolation may differ at edges/quantization boundaries, never in guest VRAM.
+      if (bad * 100 > std::max<size_t>(1, covered) * 2) {
+        std::printf("hardware fixture %zu: %zu / %zu pixels exceed 8-channel tolerance\n", i, bad, covered);
+        ++g_failures;
+      }
+    }
+  }
+  CHECK(ge::hardware::counters().submissions > 0);
+  test_internal_resolution();
+  ge::hardware::reset(); s::set_scale(1);
+}
+
+int main(int argc, char** argv) {
   init_memory();
+  if (argc == 2) {
+    test_hardware_integration(ge::hardware::parse(argv[1]));
+    std::printf("hardware GE integration: %d failures\n", g_failures);
+    return g_failures ? 1 : 0;
+  }
   test_clear_and_sprite();
   test_triangle_and_scissor();
   test_gouraud();

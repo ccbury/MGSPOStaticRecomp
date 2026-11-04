@@ -127,6 +127,62 @@ runtime settings, not stage-generation settings, so changing them does not requi
 For local comparison, `--dump-frame <png> --dump-native-frame <other.png>` captures the displayed
 surface and authoritative native pixels at the same cadence without changing guest readback behaviour.
 
+**Renderer** selects **Software** (default/reference), **Direct3D 11**, **Direct3D 12**, or **Vulkan**.
+Use **Check GPU / driver** for the selected build/adapter status; this runs on the launcher's worker,
+not the UI thread. Unavailable builds/drivers produce an error before game startup, never silently
+select Software under a hardware label. The preference is independent of scale/window size,
+survives updates and activated-UI restarts, and does not invalidate lifted stages.
+
+The hardware path is an experimental **GPU compute rasterizer**, not a fixed-function graphics pipeline
+or just GPU presentation. One shared shader performs triangle/sprite coverage, texture sampling,
+packed colour writes, independent depth, alpha/colour/stencil tests, blending, logic operations and fog.
+CPU transform/skinning/clipping and patch tessellation feed that shader; lines/points retain the
+native-grid expansion described above. Existing CPU texture/CLUT/DXT conversion and identified menu
+glyphs are reused. All scales 1x..8x are accepted, including genuine finer coverage at higher scales.
+The exact native **CPU pass still runs**, even at hardware 1x, to preserve guest VRAM/readback semantics.
+The same explicit feedback/CPU/movie/alias fallbacks apply. Neither hardware selection nor a native
+fallback guarantees higher detail for every frame.
+
+This correctness-first path synchronously uploads and reads back host shadows for each draw; it may
+be **much slower than Software**, not a promised acceleration. On the RTX 2070 SUPER verification
+host, bounded prison-scene runs measured roughly 0.5 flips/s with D3D11 and 0.8..1.8 with D3D12 at 1x;
+2x stage/fade intervals were about 0.2 flips/s. These are smoke observations, not a controlled
+same-frame performance benchmark. **Software remains recommended for playing.**
+Hardware mode expands packed colour/depth
+into 32-bit storage entries (including 16-bit guest formats). Upload arrays are bounded to 128 MiB
+per job, ordered submissions to 64 tiles of at most 256x256 pixels, and completion waits to five
+seconds with no retry after timeout/device failure. D3D12 reuses only completed fenced allocations,
+within a 384 MiB logical buffer budget, in addition to host shadows/conversion and driver overhead.
+Large targets can fail explicitly with a lower-scale recommendation. An unfinished terminal
+submission is retained until process teardown, rather than freeing memory still in GPU use.
+No driver/TDR settings are modified. Software 1x remains the lowest-resource option.
+
+```powershell
+mgspo-launcher run --renderer d3d11 --render-scale 2
+mgspo-game --renderer d3d12 --renderer-info
+# Explicit adapter-dependent tests, sequentially:
+.\build\mgspo-hardware-tests.exe d3d11
+.\build\mgspo-ge-tests.exe d3d11
+.\build\mgspo-hardware-tests.exe d3d12
+.\build\mgspo-ge-tests.exe d3d12
+```
+
+Windows D3D backends require a hardware feature-level-11.0 adapter and the Windows SDK libraries /
+D3DCompiler; they never automatically use WARP. Startup logs identify the actual backend/adapter,
+and completion/timeout diagnostics report GPU submissions, dispatches and primitives.
+Vulkan's API source path is included, but availability additionally requires an installed Vulkan
+driver/loader and **SPIR-V-enabled DXC**. No SDK/compiler/driver binaries are downloaded.
+Configure `-DMGSPO_DXC="C:\path\to\dxc.exe"` with a DXC build supporting `-spirv -T cs_6_0`,
+`-fspv-target-env=vulkan1.0`, `-fvk-use-dx-layout`, `-fvk-t-shift` and `-fvk-b-shift`.
+CMake actually compiles a probe: advertising these switches in help is insufficient. Configure that
+cache entry in both the launcher/tools build and the generated game's separate build directory.
+The installed Windows SDK DXCs (10.0.19041/22000/22621/26100) on the verification host report
+**SPIR-V CodeGen not available**, so Vulkan is explicitly unavailable there and has **not** been
+GPU-tested. No particular DXC version alone guarantees that build option. After supplying a
+compatible compiler, rebuild and run the same explicit fixtures with `vulkan` before relying on it.
+`-DMGSPO_VULKAN=OFF` excludes that optional source path. Pinned Khronos API declarations and their
+Apache-2.0 notices are under `runtime/third_party/vulkan`; no Vulkan loader is redistributed.
+
 The **Icons** selector defaults to **Original PSP**. **Modern Xbox-style (menu X/Y)** currently
 replaces positively identified title/pause menu Triangle and Square prompts with original-authored
 Y and X artwork. Other symbols remain original; this is not yet a full-game Xbox prompt set.

@@ -1,5 +1,6 @@
 #include "render_surface.h"
 #include "raster_fast.h"
+#include "hardware_renderer.h"
 #include <psp/memory.h>
 
 #include <algorithm>
@@ -36,7 +37,8 @@ void seed_pixel(Plane& p, size_t i, const uint8_t* src) {
 NativeScope::NativeScope() { ++g_internal; }
 NativeScope::~NativeScope() { --g_internal; }
 void native_access() {
-  if (g_scale > 1 && !g_internal) g_access.fetch_add(1, std::memory_order_relaxed);
+  if ((g_scale > 1 || hardware::selected() != hardware::Backend::Software) && !g_internal)
+    g_access.fetch_add(1, std::memory_order_relaxed);
 }
 int scale() { return g_scale; }
 void reset() {
@@ -101,7 +103,7 @@ void Plane::accept_native() {
     if (p.get() != this && overlaps(addr, native.size(), p->addr, p->native.size())) p->dirty = true;
 }
 void written(uint32_t addr, size_t bytes) {
-  if (g_scale == 1) return;
+  if (g_scale == 1 && hardware::selected() == hardware::Backend::Software) return;
   for (auto& p : g_planes)
     if (overlaps(addr, bytes, p->addr, p->native.size())) p->dirty = true;
 }
@@ -111,7 +113,7 @@ bool is_target(uint32_t addr, size_t bytes) {
   return false;
 }
 std::shared_ptr<Plane> acquire(uint32_t addr, uint32_t stride, int format, int rows) {
-  if (g_scale == 1) return {};
+  if (g_scale == 1 && hardware::selected() == hardware::Backend::Software) return {};
   NativeScope scope;
   addr = physical(addr);
   const int bpp = format == 3 ? 4 : 2;
@@ -167,7 +169,7 @@ std::shared_ptr<Plane> acquire(uint32_t addr, uint32_t stride, int format, int r
   return p;
 }
 std::shared_ptr<Plane> display(uint32_t addr, uint32_t stride, int format) {
-  if (g_scale == 1) return {};
+  if (g_scale == 1 && hardware::selected() == hardware::Backend::Software) return {};
   fast::sync();
   for (auto& p : g_planes)
     if (p->addr == physical(addr) && p->stride == stride && p->format == format && p->rows >= 272) {
