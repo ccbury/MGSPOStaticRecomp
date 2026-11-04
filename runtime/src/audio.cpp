@@ -1,4 +1,4 @@
-// sceAudio. Channels queue stereo samples that a host audio thread mixes; blocking calls are paced by the clock.
+// sceAudio. Blocking output follows device consumption, or the clock when no device is available.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -76,7 +76,7 @@ void ensure_started() {
 
 bool valid(int ch) { return ch >= 0 && ch < kChannels && g_ch[ch].reserved; }
 
-// Queues a buffer and returns the clock time at which the previous one has finished playing.
+// Returns the previous buffer's clock deadline for device-free pacing.
 std::optional<uint64_t> queue(int ch, int32_t volL, int32_t volR, uint32_t buf) {
   Channel& c = g_ch[ch];
   uint32_t n = c.samples;
