@@ -10,6 +10,7 @@
 
 #include "atrac3.h"
 #include "atrac3plus.h"
+#include "audio_buffer.h"
 #include "sas_core.h"
 
 using namespace psp;
@@ -24,6 +25,44 @@ static int g_failures = 0;
   } while (0)
 
 static const uint32_t kBuf = 0x08A00000;
+
+static void test_output_buffer() {
+  audio::OutputBuffer fifo;
+  CHECK(!fifo.producer_waiting());
+  for (int i = 0; i < 2304; ++i) {
+    CHECK(fifo.can_append(1));
+    fifo.push(static_cast<int16_t>(i), static_cast<int16_t>(-i));
+  }
+  CHECK(fifo.producer_waiting());
+  for (int i = 0; i < 1024; ++i) {
+    int32_t l = 7, r = -7;
+    CHECK(fifo.pop(l, r));
+    CHECK(l == i + 7 && r == -i - 7);
+  }
+  CHECK(fifo.frames() == 1280 && !fifo.producer_waiting());
+  for (int i = 1024; i < 2304; ++i) {
+    int32_t l = 0, r = 0;
+    CHECK(fifo.pop(l, r));
+    CHECK(l == i && r == -i);
+  }
+  int32_t l = 3, r = 5;
+  CHECK(!fifo.pop(l, r) && l == 3 && r == 5);
+  CHECK(fifo.can_append(audio::OutputBuffer::kMaxFrames));
+  CHECK(!fifo.can_append(audio::OutputBuffer::kMaxFrames + 1));
+  CHECK(!fifo.can_append(SIZE_MAX));
+  for (size_t i = 0; i < audio::OutputBuffer::kMaxFrames; ++i) fifo.push(1, -1);
+  CHECK(fifo.can_append(0) && !fifo.can_append(1));
+  fifo = audio::OutputBuffer{};
+  for (size_t i = 0; i < audio::OutputBuffer::kLeadFrames; ++i) fifo.push(42, -42);
+  CHECK(!fifo.producer_waiting());
+  fifo.push(42, -42);
+  CHECK(fifo.producer_waiting());
+  for (int i = 0; i < 1456; ++i) {
+    l = r = 0;
+    CHECK(fifo.pop(l, r) && l == 42 && r == -42);
+  }
+  CHECK(!fifo.producer_waiting());  // about 33 ms of device consumption without a producer
+}
 
 static void put_vag_block(uint32_t addr, int shift, int flags, int nibble) {
   uint8_t b[16] = {};
@@ -135,6 +174,9 @@ static const ImportEntry kImports[] = {
     {0x08800038, "sceAtrac3plus", 0x6A8C3CD5},
     {0x08800040, "sceAtrac3plus", 0x644E5607},
     {0x08800048, "sceAtrac3plus", 0x61EB33F5},
+    {0x08800050, "sceAudio", 0x5EC81C55},
+    {0x08800058, "sceAudio", 0x8C1009B2},
+    {0x08800060, "sceAudio", 0x6FC46853},
 };
 
 static uint32_t call(int idx, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0, uint32_t t0 = 0) {
@@ -142,6 +184,18 @@ static uint32_t call(int idx, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0,
   c.r[4] = a0; c.r[5] = a1; c.r[6] = a2; c.r[7] = a3; c.r[8] = t0;
   hle(c, idx);
   return c.r[2];
+}
+
+static void test_headless_output() {
+  CHECK(call(10, 0, 1024, 0) == 0);
+  std::memset(ptr(kBuf), 0, 4096);
+  // No host device consumes samples in this fixture; retain pacing, not an ever-growing FIFO.
+  for (int i = 0; i < 64; ++i) CHECK(call(11, 0, 0x8000, kBuf) == 1024);
+  CHECK(call(12, 0) == 0);
+  CHECK(call(11, 0, 0x8000, kBuf) != 1024);
+  CHECK(call(10, 0, 65537, 0) == 0);
+  CHECK(call(11, 0, 0x8000, kBuf) != 65537);
+  CHECK(call(12, 0) == 0);
 }
 
 static void test_hle() {
@@ -323,6 +377,8 @@ int main() {
   register_all_hle();
   bind_tables(nullptr, 0, kImports, sizeof(kImports) / sizeof(kImports[0]));
 
+  test_output_buffer();
+  test_headless_output();
   test_vag();
   test_envelope();
   test_mix_and_end();
