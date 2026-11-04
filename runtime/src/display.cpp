@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "kernel_internal.h"
+#include "ctrl_sampling.h"
 #include "platform.h"
 #include "render_surface.h"
 
@@ -343,6 +344,7 @@ void h_zero(Cpu& c) { ret(c, 0); }
 
 struct CtrlState {
   uint32_t mode = 0;
+  CtrlReadCycle reads;
 };
 CtrlState g_ctrl;
 
@@ -398,23 +400,22 @@ void h_ctrl_mode(Cpu& c) {
   ret(c, 0);
 }
 
-void h_ctrl_read(Cpu& c) {
-  // Reads block until the next vblank so polling loops pace themselves like real hardware.
-  sleep_until(c, display_next_vblank_us(now_us()), false);
-  write_pad(arg(c, 0), arg(c, 1), false);
+void read_pad(Cpu& c, bool negative) {
+  // Only a second read in the same sampling cycle blocks; peeks do not consume it.
+  while (!g_ctrl.reads.take(g_vcount))
+    sleep_until(c, display_next_vblank_us(now_us()), false);
+  write_pad(arg(c, 0), arg(c, 1), negative);
   ret(c, arg(c, 1));
 }
+
+void h_ctrl_read(Cpu& c) { read_pad(c, false); }
 
 void h_ctrl_peek(Cpu& c) {
   write_pad(arg(c, 0), arg(c, 1), false);
   ret(c, arg(c, 1));
 }
 
-void h_ctrl_read_neg(Cpu& c) {
-  sleep_until(c, display_next_vblank_us(now_us()), false);
-  write_pad(arg(c, 0), arg(c, 1), true);
-  ret(c, arg(c, 1));
-}
+void h_ctrl_read_neg(Cpu& c) { read_pad(c, true); }
 
 void h_ctrl_peek_neg(Cpu& c) {
   write_pad(arg(c, 0), arg(c, 1), true);
@@ -425,6 +426,7 @@ void h_ctrl_peek_neg(Cpu& c) {
 
 void display_init() {
   g_fb = FrameBuf{};
+  g_ctrl = CtrlState{};
   g_vcount = 0;
   g_nextVblank = now_us() + kVblankUs;
   g_lastPresented = UINT64_MAX;

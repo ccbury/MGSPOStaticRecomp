@@ -1,6 +1,7 @@
 #include <psp/runtime.h>
 #include <psp/kernel.h>
 #include "../runtime/src/platform.h"
+#include "../runtime/src/ctrl_sampling.h"
 #include <cstdio>
 #include <stdexcept>
 
@@ -392,6 +393,21 @@ void testFirmware() {
   psp::k::display_set_gamepad_script("0:0x4010:10:127:-127");
   CHECK(psp::kernel_run_main(0x08804000) == 0);
 }
+
+void testReadCycle() {
+  psp::k::CtrlReadCycle reads;
+  CHECK(reads.take(0));
+  CHECK(!reads.take(0));
+  CHECK(!reads.take(0));
+  CHECK(reads.take(1));
+  CHECK(!reads.take(1));
+  CHECK(reads.take(4));  // Several elapsed samples still make one fresh read available.
+  CHECK(!reads.take(4));
+  CHECK(reads.take(0x100000000ull));
+  CHECK(!reads.take(0x100000000ull));
+  reads = {};
+  CHECK(reads.take(0));
+}
 }  // namespace
 
 int main() {
@@ -405,6 +421,7 @@ int main() {
   testGamepadMapping();
   testStickRoles();
   testNativeSelection();
+  testReadCycle();
   testFirmware();
   psp::free_memory();
   return failures ? 1 : 0;
