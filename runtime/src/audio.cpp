@@ -1,5 +1,7 @@
 // sceAudio. Channels queue stereo samples that a host audio thread mixes; blocking calls are paced by the clock.
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
 
@@ -24,18 +26,24 @@ struct Channel {
   uint32_t srcRate = kRate;
   uint64_t busyUntil = 0;
   std::deque<int16_t> fifo;  // interleaved stereo
+  uint64_t queued = 0, missing = 0, dropped = 0, calls = 0;
+  int32_t lastL = 0, lastR = 0, peak = 0;
 };
 
 Channel g_ch[kChannels];
 std::mutex g_audioMutex;
 bool g_started = false;
+const bool g_diagnostics = std::getenv("MGSPO_AUDIO_STATS") != nullptr;
 
 void mix(int16_t* out, uint32_t frames) {
   std::lock_guard<std::mutex> lk(g_audioMutex);
   for (uint32_t i = 0; i < frames; ++i) {
     int32_t l = 0, r = 0;
     for (auto& c : g_ch) {
-      if (c.fifo.size() < 2) continue;
+      if (c.fifo.size() < 2) {
+        if (g_diagnostics && c.reserved && c.calls) ++c.missing;
+        continue;
+      }
       l += c.fifo[0];
       r += c.fifo[1];
       c.fifo.pop_front();
@@ -43,6 +51,21 @@ void mix(int16_t* out, uint32_t frames) {
     }
     out[i * 2] = static_cast<int16_t>(std::clamp(l, -32768, 32767));
     out[i * 2 + 1] = static_cast<int16_t>(std::clamp(r, -32768, 32767));
+  }
+  if (g_diagnostics) {
+    static uint64_t mixed = 0, report = 0;
+    mixed += frames;
+    if (mixed - report >= kRate) {
+      report = mixed;
+      for (int i = 0; i < kChannels; ++i) {
+        const auto& c = g_ch[i];
+        if (c.calls)
+          std::fprintf(stderr, "[audio] ch=%d rate=%u block=%u calls=%llu queued=%llu pending=%zu missing=%llu dropped=%llu mixed=%llu vol=%d/%d peak=%d\n",
+                       i, c.srcRate, c.samples, (unsigned long long)c.calls, (unsigned long long)c.queued,
+                       c.fifo.size() / 2, (unsigned long long)c.missing, (unsigned long long)c.dropped,
+                       (unsigned long long)mixed, c.lastL, c.lastR, c.peak);
+      }
+    }
   }
 }
 
@@ -67,7 +90,10 @@ uint64_t queue(int ch, int32_t volL, int32_t volR, uint32_t buf) {
   uint32_t outFrames = static_cast<uint32_t>(static_cast<uint64_t>(n) * kRate / c.srcRate);
   {
     std::lock_guard<std::mutex> lk(g_audioMutex);
+    ++c.calls;
+    c.lastL = volL; c.lastR = volR;
     if (buf && n && c.fifo.size() / 2 < kMaxQueuedFrames) {
+      c.queued += outFrames;
       for (uint32_t i = 0; i < outFrames; ++i) {
         uint32_t s = static_cast<uint32_t>(static_cast<uint64_t>(i) * c.srcRate / kRate);
         int32_t l, r;
@@ -77,10 +103,11 @@ uint64_t queue(int ch, int32_t volL, int32_t volR, uint32_t buf) {
           l = static_cast<int16_t>(lhu(buf + s * 4));
           r = static_cast<int16_t>(lhu(buf + s * 4 + 2));
         }
+        if (g_diagnostics) c.peak = std::max(c.peak, std::max(std::abs(l), std::abs(r)));
         c.fifo.push_back(static_cast<int16_t>(std::clamp(l * volL / 0x8000, -32768, 32767)));
         c.fifo.push_back(static_cast<int16_t>(std::clamp(r * volR / 0x8000, -32768, 32767)));
       }
-    }
+    } else if (buf && n) c.dropped += outFrames;
   }
   uint64_t now = now_us();
   uint64_t start = std::max(c.busyUntil, now);
@@ -89,7 +116,10 @@ uint64_t queue(int ch, int32_t volL, int32_t volR, uint32_t buf) {
 }
 
 void out_common(Cpu& c, int ch, int32_t l, int32_t r, uint32_t buf, bool block) {
-  if (!valid(ch)) return ret(c, E_ERROR);
+  if (!valid(ch)) {
+    if (g_diagnostics) std::fprintf(stderr, "[audio] Invalid output channel %d\n", ch);
+    return ret(c, E_ERROR);
+  }
   ensure_started();
   uint64_t start = queue(ch, l, r, buf);
   uint32_t n = g_ch[ch].samples;
@@ -98,6 +128,7 @@ void out_common(Cpu& c, int ch, int32_t l, int32_t r, uint32_t buf, bool block) 
 }
 
 void h_reserve(Cpu& c) {
+  std::lock_guard<std::mutex> lk(g_audioMutex);
   int ch = static_cast<int>(arg(c, 0));
   if (ch < 0) {
     for (int i = 0; i < kSrcChannel; ++i)
@@ -111,6 +142,7 @@ void h_reserve(Cpu& c) {
   g_ch[ch].reserved = true;
   g_ch[ch].samples = arg(c, 1);
   g_ch[ch].format = arg(c, 2);
+  if (g_diagnostics) std::fprintf(stderr, "[audio] reserve ch=%d samples=%u format=%x\n", ch, g_ch[ch].samples, g_ch[ch].format);
   ret(c, static_cast<uint32_t>(ch));
 }
 
@@ -150,6 +182,7 @@ void h_rest_len(Cpu& c) {
 void h_set_len(Cpu& c) {
   int ch = static_cast<int>(arg(c, 0));
   if (!valid(ch)) return ret(c, E_ERROR);
+  std::lock_guard<std::mutex> lk(g_audioMutex);
   g_ch[ch].samples = arg(c, 1);
   ret(c, 0);
 }
@@ -157,6 +190,7 @@ void h_set_len(Cpu& c) {
 void h_change_config(Cpu& c) {
   int ch = static_cast<int>(arg(c, 0));
   if (!valid(ch)) return ret(c, E_ERROR);
+  std::lock_guard<std::mutex> lk(g_audioMutex);
   g_ch[ch].format = arg(c, 1);
   ret(c, 0);
 }
@@ -171,6 +205,7 @@ void h_change_volume(Cpu& c) {
 
 // sceAudioSRCChReserve(samples, freq, channels)
 void h_src_reserve(Cpu& c) {
+  std::lock_guard<std::mutex> lk(g_audioMutex);
   Channel& ch = g_ch[kSrcChannel];
   ch = Channel{};
   ch.reserved = true;

@@ -34,6 +34,7 @@ bool g_trace = false;
 uint32_t (*g_linker)(const char*, uint32_t) = nullptr;
 std::vector<uint8_t> g_soft;    // handlers that a loaded module's export overrides
 std::vector<uint8_t> g_linked;  // imports that were forwarded to a loaded module
+std::map<uint32_t, uint32_t> g_stubImports;
 
 std::string hex(uint32_t v) {
   char b[16];
@@ -78,7 +79,10 @@ void bind_tables(const FuncEntry* funcs, size_t funcCount, const ImportEntry* im
   g_soft.assign(importCount, 0);
   g_order.clear();
   g_unresolved = 0;
+  g_stubImports.clear();
   for (size_t i = 0; i < importCount; ++i) {
+    if (imports[i].stub != UINT32_MAX)
+      g_stubImports.emplace(imports[i].stub, static_cast<uint32_t>(i));
     auto it = g_registered.find({imports[i].module, imports[i].nid});
     if (it != g_registered.end()) {
       g_handlers[i] = it->second.fn;
@@ -169,6 +173,11 @@ void ov_missing(Cpu&, uint32_t addr) {
 }
 
 void call(Cpu& c, uint32_t addr) {
+  auto stub = g_stubImports.upper_bound(addr);
+  if (stub != g_stubImports.begin()) {
+    --stub;
+    if (addr - stub->first < 8) return hle(c, stub->second);
+  }
   if (addr >= g_ovBase && addr < g_ovEnd) {
     if (auto fn = g_ovTable[(addr - g_ovBase) >> 2]) return fn(c);
     auto st = g_ovStubs.find(addr);
@@ -180,12 +189,6 @@ void call(Cpu& c, uint32_t addr) {
   if (it != end && it->addr == addr) {
     it->fn(c);
     return;
-  }
-  for (size_t i = 0; i < g_importCount; ++i) {
-    if (addr >= g_imports[i].stub && addr < g_imports[i].stub + 8) {
-      hle(c, static_cast<uint32_t>(i));
-      return;
-    }
   }
   guest_fault("call to unrecompiled address " + hex(addr) + " (ra " + hex(c.r[31]) + ")");
 }

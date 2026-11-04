@@ -4,6 +4,44 @@ The main module has no audio imports of its own. Everything goes through `sound2
 `sceAudio`, `sceSasCore` and `sceAtrac3plus`. The game mixes with SAS and ATRAC itself and then pushes the
 result out with `sceAudioOutput*`, so the HLE only has to produce correct sample data.
 
+Cross-module calls to main-module import stubs must resolve the import before a lifted function at
+the same address. Some import placeholders are also present as empty generated functions. Selecting
+those first bypassed `sound2`'s streamed-PCM configuration/output exports: movie audio decoded into
+nonzero PCM but never reached `sceAudio`. Runtime dispatch now indexes the eight-byte import ranges
+and resolves them first, including delay-slot calls, without changing generated stages or codec output.
+
+Async file-open completion also returns the opened descriptor rather than a generic zero success
+value, so callers can use the completed result for subsequent reads. This has a synthetic
+open/read/poll/wait/EOF regression; it does not by itself resolve the comic loader issue below.
+
+The measured Software 1x title/movie sequence previously submitted only zero PCM. With corrected
+dispatch, the matching 44.791-second capture has RMS 3309; title playback between 20 and 40 seconds
+is over 99.9% nonzero. These are signal/routing checks, not a listening test or proof of exact
+audio/video synchronization. Codec output was not changed.
+
+Remaining reproduced limitations: an unskipped opening comic stalls around 35 seconds while
+`fdemo_sound_Load` retries reads using descriptor -1. Its preceding file lookup requests
+`oss_bgm_bgm01_01_03.sep`, absent from this image's directory (the voice segment exists).
+The async-open completion fix does not prevent this; the incorrect request/loader state still
+needs investigation rather than substituting another music file or suppressing the error.
+Separately, a prison scene at about 17 flips/s underfeeds the active mixer by about 18% in late
+intervals with no queue-cap drops. Slowdown-related starvation is not fixed by import routing.
+
+## Local output diagnostics
+
+On Windows, set `MGSPO_AUDIO_DUMP_RAW` to a local output file to capture the samples submitted to
+waveOut: stereo signed 16-bit little-endian PCM at 44100 Hz. Capture is optional, flushed per host
+block, bounded to 64 MiB, and stops with an explicit diagnostic on a write failure or the size limit.
+It also enables host audio in `--headless` mode; a working Windows audio device is still required.
+It records the mixed submission, not the physical speaker/driver output, and adds file I/O overhead.
+Keep captures local: they can contain game audio and must not be committed.
+
+`MGSPO_AUDIO_STATS=1` reports each active channel's queued, missing and dropped frame counts,
+pending frames, source rate/block size, supplied volume and peak source magnitude once per mixed
+second. Missing frames include startup and intentionally idle periods after a channel first submits;
+interpret interval deltas in context rather than treating the cumulative count as proof of a glitch.
+Neither switch changes guest timing or resamples the simulation to conceal slow rendering.
+
 ## Imports used by sound2
 
 | Library | Functions |
