@@ -32,6 +32,15 @@ int main(int argc, char** argv) {
     }
     std::printf("%s\n", h::probe(backend).c_str());
     h::select(backend);
+    if (h::retains_targets()) {
+      h::Job uninitialized;
+      uninitialized.colour.resize(64); uninitialized.depth.resize(64);
+      uninitialized.commands = {triangle(1)};
+      uninitialized.uploadTargets = false;
+      bool rejected = false;
+      try { h::run(uninitialized); } catch (const std::runtime_error&) { rejected = true; }
+      check(rejected && h::counters().submissions == 0, "Uninitialized resident targets were submitted.");
+    }
     {
       h::Job invalid;
       invalid.colour.resize(64); invalid.depth.resize(64);
@@ -96,6 +105,9 @@ int main(int argc, char** argv) {
       h::run(ordered);
       check(ordered.colour[0] == 0xFF000095 && h::counters().submissions == before.submissions + 3 &&
             h::counters().primitives == before.primitives + 150, "Bounded submissions dropped or reordered primitives.");
+      const uint64_t transfers = h::retains_targets() ? 1 : 3;
+      check(h::counters().uploads == before.uploads + transfers && h::counters().readbacks == before.readbacks + transfers,
+            "Bounded chunks unexpectedly reuploaded or read back retained targets.");
     }
     std::printf("GPU submissions=%llu dispatches=%llu primitives=%llu; scales1..8 packed/depth/alpha/mask passed.\n",
                  (unsigned long long)h::counters().submissions, (unsigned long long)h::counters().dispatches,

@@ -1,5 +1,6 @@
 // Drives the software GE with hand-built command lists and checks the pixels that end up in VRAM.
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -921,6 +922,145 @@ static void test_all_resolution_scales() {
   ge::fast::set_mode(ge::fast::Mode::Fast);
 }
 
+static void test_hardware_workload(ge::hardware::Backend backend) {
+  namespace s = ge::surface;
+  ge::hardware::select(backend);
+  s::set_scale(2);
+  s::NativeScope internal;
+  clear_vram();
+  std::memset(ptr(kVram + 0x88000), 255, 512 * 272 * 2);
+  Builder b;
+  b.setup().add(cmd(0x9E, 0x088000)).add(cmd(0x9F, 0x040000 | 512));
+  b.add(cmd(0x23, 1)).add(cmd(0xDE, 4)).add(cmd(0xE7, 0));
+  b.add(cmd(0x21, 1)).add(cmd(0xDF, 2 | (3 << 4)));
+  for (int i = 0; i < 128; ++i) {
+    const uint32_t colour = 0x80000000 | uint32_t(i * 37) % 0xFFFFFF;
+    const float z = 30000.0f - i * 10;
+    put_verts(kVerts + i * 32, {{colour, 0, 0, z}, {colour, 32, 32, z}});
+    b.vertex(kVerts + i * 32, kThroughCol).prim(6, 2);
+  }
+  b.finish();
+  ge::Gpu g;
+  const auto start = std::chrono::steady_clock::now();
+  exec(g, b);
+  auto plane = s::display(kVram, 512, 3);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  CHECK(plane != nullptr);
+  uint64_t hash = 14695981039346656037ull;
+  if (plane) for (auto byte : plane->pixels) { hash ^= byte; hash *= 1099511628211ull; }
+  std::printf("ordered depth/blend workload: %.3f ms, host hash=%llu, submissions=%llu dispatches=%llu uploads=%llu readbacks=%llu\n",
+              ms, (unsigned long long)hash, (unsigned long long)ge::hardware::counters().submissions,
+              (unsigned long long)ge::hardware::counters().dispatches,
+              (unsigned long long)ge::hardware::counters().uploads,
+              (unsigned long long)ge::hardware::counters().readbacks);
+  CHECK(lhu(kVram + 0x88000) == 28730);
+  CHECK(hash == 8046747391423423269ull);
+  CHECK(ge::hardware::counters().submissions == 2);
+  const uint64_t transfers = ge::hardware::retains_targets() ? 1 : 2;
+  CHECK(ge::hardware::counters().uploads == transfers && ge::hardware::counters().readbacks == transfers);
+  ge::hardware::reset(); s::set_scale(1);
+}
+
+static void test_hardware_batch_boundaries() {
+  namespace s = ge::surface;
+  namespace h = ge::hardware;
+  s::set_scale(2);
+  s::NativeScope internal;
+  clear_vram();
+  std::memset(ptr(kVram + 0x100000), 255, 16 * 16 * 2);
+  auto colour = s::acquire(kVram, 16, 3, 16);
+  auto depth = s::acquire(kVram + 0x100000, 16, -1, 16);
+  auto rectangle = [](uint32_t rgba, float z) {
+    h::Command c;
+    c.sizes[0] = c.sizes[1] = 32; c.sizes[2] = 3;
+    c.clip[2] = c.clip[3] = 31;
+    c.bounds[2] = c.bounds[3] = 4;
+    c.modes[3] = 1;
+    c.vertices[1].position[0] = c.vertices[1].position[1] = 4;
+    c.vertices[1].position[2] = z;
+    for (int channel = 0; channel < 4; ++channel)
+      c.vertices[1].colour[channel] = ((rgba >> (channel * 8)) & 255) / 255.0f;
+    return c;
+  };
+  const auto initial = h::counters().submissions;
+  auto red = rectangle(0xFF0000FF, 100);
+  red.features[0] = h::DepthTest; red.registers[0xDE] = 4;
+  auto farther = rectangle(0xFFFF0000, 200);
+  farther.features[0] = h::DepthTest; farther.registers[0xDE] = 4;
+  auto green = rectangle(0x8000FF00, 50);
+  green.features[0] = h::DepthTest | h::Blend;
+  green.registers[0xDE] = 4; green.registers[0xDF] = 2 | (3 << 4);
+  auto& first = s::hardware_draw(colour, depth, {});
+  first.commands.push_back(red);
+  s::hardware_draw(colour, depth, {}).commands.push_back(farther);
+  s::hardware_draw(colour, depth, {}).commands.push_back(green);
+  CHECK(h::counters().submissions == initial);  // no per-draw readback
+  colour->refresh();
+  CHECK(h::counters().submissions == initial + 1);
+  CHECK(host_pixel(depth, 0, 0) == 50);
+  CHECK((host_pixel(colour, 0, 0) & 0xFFFFFF) == 0x00807F);
+  CHECK(lw(kVram) == 0 && lhu(kVram + 0x100000) == 65535);  // GPU never changes guest bytes
+
+  // Changed decoded textures submit in order without reading back or reuploading the targets.
+  auto textured = rectangle(0xFFFFFFFF, 0);
+  textured.features[0] = h::Texture | h::Blend;
+  textured.modes[0] = textured.modes[1] = 1;
+  textured.modes[2] = 8; textured.registers[0xC9] = 3 | (1 << 8);
+  textured.registers[0xDF] = 2 | (3 << 4);
+  auto before = h::counters().submissions;
+  const auto transfers = h::counters();
+  s::hardware_draw(colour, {}, {0xFF0000FF}).commands.push_back(textured);
+  s::hardware_draw(colour, {}, {0x8000FF00}).commands.push_back(textured);
+  CHECK(h::counters().submissions == before + 1);
+  CHECK(h::counters().uploads == transfers.uploads + 1 && h::counters().readbacks == transfers.readbacks);
+  colour = s::acquire(kVram, 16, 3, 16);
+  const auto texturePixel = host_pixel(colour, 0, 0);
+  CHECK(h::counters().submissions == before + 2 && (texturePixel & 0xFFFFFF) == 0x00807F);
+  CHECK(h::counters().uploads == transfers.uploads + 1 && h::counters().readbacks == transfers.readbacks + 1);
+
+  // A capacity/explicit submission may leave no commands for the later readback boundary.
+  s::hardware_draw(colour, {}, {}).commands.push_back(rectangle(0xFFFF0000, 0));
+  const auto deferred = h::counters();
+  s::submit_hardware();
+  CHECK(h::counters().readbacks == deferred.readbacks && host_pixel(colour, 0, 0) == texturePixel);
+  colour->refresh();
+  CHECK(h::counters().readbacks == deferred.readbacks + 1 && host_pixel(colour, 0, 0) == 0xFFFF0000);
+
+  // Same-value native writes and aliases must not retain old high-resolution samples.
+  red = rectangle(0xFFFFFFFF, 0);
+  s::hardware_draw(colour, {}, {}).commands.push_back(red);
+  before = h::counters().submissions;
+  s::written(kVram | 0x40000000, 4);
+  CHECK(h::counters().submissions == before + 1);
+  colour->refresh();
+  CHECK(host_pixel(colour, 0, 0) == 0);
+  s::hardware_draw(colour, {}, {}).commands.push_back(red);
+  auto alias = s::acquire(kVram, 16, 0, 16);
+  CHECK(alias && host_pixel(alias, 0, 0) == 0);
+  alias->accept_native();
+  colour->refresh();
+  CHECK(host_pixel(colour, 0, 0) == 0);
+
+  // Retained-pointer writes are checked before accepting another compatible draw.
+  auto* retained = ptr(kVram);
+  s::hardware_draw(colour, {}, {}).commands.push_back(red);
+  const uint32_t movie = 0xFF2468AC;
+  std::memcpy(retained, &movie, 4);
+  colour = s::acquire(kVram, 16, 3, 16, true);
+  CHECK(host_pixel(colour, 0, 0) == movie);
+  CHECK(host_pixel(colour, 2, 0) == 0xFFFFFFFF);
+  s::hardware_draw(colour, {}, {}).commands.push_back(red);
+  before = h::counters().submissions;
+  s::reset();
+  CHECK(h::counters().submissions == before + 1 && s::allocated_bytes() == 0);
+  colour = s::acquire(kVram, 16, 3, 16);
+  s::hardware_draw(colour, {}, {}).commands.push_back(red);
+  const auto backend = h::selected();
+  h::select(h::Backend::Software);
+  CHECK(host_pixel(colour, 0, 0) == 0xFFFFFFFF);
+  h::select(backend);
+}
+
 static void test_hardware_integration(ge::hardware::Backend backend) {
   namespace s = ge::surface;
   using Test = void (*)();
@@ -972,12 +1112,17 @@ static void test_hardware_integration(ge::hardware::Backend backend) {
     }
   }
   CHECK(ge::hardware::counters().submissions > 0);
+  if (ge::hardware::retains_targets()) test_hardware_batch_boundaries();
   test_internal_resolution();
   ge::hardware::reset(); s::set_scale(1);
 }
 
 int main(int argc, char** argv) {
   init_memory();
+  if (argc == 3 && std::strcmp(argv[2], "--batch-workload") == 0) {
+    test_hardware_workload(ge::hardware::parse(argv[1]));
+    return g_failures ? 1 : 0;
+  }
   if (argc == 2) {
     test_hardware_integration(ge::hardware::parse(argv[1]));
     std::printf("hardware GE integration: %d failures\n", g_failures);

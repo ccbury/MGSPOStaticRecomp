@@ -21,6 +21,7 @@ class D3D12Device final : public Device {
   std::string description_;
   std::unique_ptr<Submission> pending_;
   std::unique_ptr<Submission> idle_;
+  size_t residentColour_ = 0, residentDepth_ = 0;
   ComPtr<ID3D12Resource> buffer(Submission& s, size_t bytes, D3D12_HEAP_TYPE type, D3D12_RESOURCE_STATES state) {
     const size_t index = s.cursor++;
     bytes = std::max<size_t>(4, bytes);
@@ -106,10 +107,13 @@ class D3D12Device final : public Device {
     if (event_) CloseHandle(event_);
   }
   std::string description() const override { return description_; }
+  bool retains_targets() const override { return true; }
   void run(Job& job, Counters& counters) override {
     if (pending_) throw std::runtime_error("D3D12 renderer is stopped after an incomplete submission; restart with a lower scale.");
     auto commands = tiles(job);
-    if (commands.empty()) return;
+    if (commands.empty() && (job.uploadTargets || !job.readbackTargets)) return;
+    if (!job.uploadTargets && (residentColour_ != job.colour.size() + 1 || residentDepth_ != job.depth.size() + 1))
+      throw std::runtime_error("D3D12 retained-target dimensions changed without an upload.");
     auto submission = idle_ ? std::move(idle_) : std::make_unique<Submission>();
     auto& s = *submission;
     s.cursor = 0;
@@ -129,18 +133,20 @@ class D3D12Device final : public Device {
       readback[i] = buffer(s, bytes, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_STATE_COPY_DEST);
       auto input = buffer(s, bytes, D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
       uint32_t zero = 0;
-      upload(input.Get(), values[i]->empty() ? &zero : values[i]->data(), bytes);
-      s.list->CopyBufferRegion(targets[i].Get(), 0, input.Get(), 0, bytes);
+      if (job.uploadTargets) {
+        upload(input.Get(), values[i]->empty() ? &zero : values[i]->data(), bytes);
+        s.list->CopyBufferRegion(targets[i].Get(), 0, input.Get(), 0, bytes);
+      }
       transition(s.list.Get(), targets[i].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     }
     auto texture = buffer(s, std::max<size_t>(4, job.texture.size() * 4), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
     uint32_t zero = 0;
     upload(texture.Get(), job.texture.empty() ? &zero : job.texture.data(), std::max<size_t>(4, job.texture.size() * 4));
     constexpr size_t stride = (sizeof(Command) + 255) & ~size_t(255);
-    auto constants = buffer(s, stride * commands.size(), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
+    auto constants = buffer(s, stride * std::max<size_t>(1, commands.size()), D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_STATE_GENERIC_READ);
     std::vector<uint8_t> data(stride * commands.size());
     for (size_t i = 0; i < commands.size(); ++i) std::memcpy(data.data() + i * stride, &commands[i], sizeof(Command));
-    upload(constants.Get(), data.data(), data.size());
+    if (!data.empty()) upload(constants.Get(), data.data(), data.size());
     s.list->SetComputeRootSignature(root_.Get());
     s.list->SetComputeRootUnorderedAccessView(1, targets[0]->GetGPUVirtualAddress());
     s.list->SetComputeRootUnorderedAccessView(2, targets[1]->GetGPUVirtualAddress());
@@ -152,9 +158,13 @@ class D3D12Device final : public Device {
       s.list->ResourceBarrier(1, &ordering);
     }
     for (int i = 0; i < 2; ++i) {
-      transition(s.list.Get(), targets[i].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-      s.list->CopyBufferRegion(readback[i].Get(), 0, targets[i].Get(), 0, std::max<size_t>(4, values[i]->size() * 4));
-      transition(s.list.Get(), targets[i].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+      if (job.readbackTargets) {
+        transition(s.list.Get(), targets[i].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        s.list->CopyBufferRegion(readback[i].Get(), 0, targets[i].Get(), 0, std::max<size_t>(4, values[i]->size() * 4));
+        transition(s.list.Get(), targets[i].Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+      } else {
+        transition(s.list.Get(), targets[i].Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+      }
     }
     check(s.list->Close(), "D3D12 close raster list");
     ID3D12CommandList* list = s.list.Get();
@@ -165,7 +175,7 @@ class D3D12Device final : public Device {
     if (WaitForSingleObject(event_, 5000) != WAIT_OBJECT_0)
       throw std::runtime_error("D3D12 GPU completion exceeded 5 seconds; renderer stopped without retry.");
     check(device_->GetDeviceRemovedReason(), "D3D12 device health");
-    for (int i = 0; i < 2; ++i) {
+    if (job.readbackTargets) for (int i = 0; i < 2; ++i) {
       void* output = nullptr;
       D3D12_RANGE range{0, values[i]->size() * 4};
       check(readback[i]->Map(0, &range, &output), "D3D12 completed readback");
@@ -173,6 +183,8 @@ class D3D12Device final : public Device {
       D3D12_RANGE noWrite{0, 0}; readback[i]->Unmap(0, &noWrite);
     }
     idle_ = std::move(pending_);
+    residentColour_ = job.colour.size() + 1; residentDepth_ = job.depth.size() + 1;
+    counters.uploads += job.uploadTargets; counters.readbacks += job.readbackTargets;
     ++counters.submissions; counters.dispatches += commands.size(); counters.primitives += job.commands.size();
   }
 };

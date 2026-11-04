@@ -8,6 +8,10 @@ struct Buffer {
   ComPtr<ID3D11Buffer> data, readback;
   ComPtr<ID3D11UnorderedAccessView> uav;
   ComPtr<ID3D11ShaderResourceView> srv;
+  size_t bytes = 0;
+};
+struct Buffers {
+  Buffer colour, depth, texture;
 };
 class D3D11Device final : public Device {
   ComPtr<ID3D11Device> device_;
@@ -16,17 +20,27 @@ class D3D11Device final : public Device {
   ComPtr<ID3D11Buffer> constants_;
   ComPtr<ID3D11Query> fence_;
   std::string description_;
-  Buffer buffer(const std::vector<uint32_t>& values, bool writable) {
+  std::unique_ptr<Buffers> buffers_ = std::make_unique<Buffers>();
+  bool pending_ = false;
+  bool resident_ = false;
+  void buffer(Buffer& retained, const std::vector<uint32_t>& values, bool writable) {
+    const size_t bytes = std::max<size_t>(1, values.size()) * sizeof(uint32_t);
+    uint32_t zero = 0;
+    const void* input = values.empty() ? &zero : values.data();
+    if (retained.bytes == bytes) {
+      context_->UpdateSubresource(retained.data.Get(), 0, nullptr, input, 0, 0);
+      return;
+    }
+    retained = {};
     Buffer b;
     D3D11_BUFFER_DESC desc{};
-    desc.ByteWidth = static_cast<UINT>(std::max<size_t>(1, values.size()) * sizeof(uint32_t));
+    desc.ByteWidth = static_cast<UINT>(bytes);
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = writable ? D3D11_BIND_UNORDERED_ACCESS : D3D11_BIND_SHADER_RESOURCE;
     desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
     desc.StructureByteStride = sizeof(uint32_t);
-    uint32_t zero = 0;
     D3D11_SUBRESOURCE_DATA init{};
-    init.pSysMem = values.empty() ? &zero : values.data();
+    init.pSysMem = input;
     check(device_->CreateBuffer(&desc, &init, &b.data), "D3D11 GPU buffer");
     if (writable) {
       check(device_->CreateUnorderedAccessView(b.data.Get(), nullptr, &b.uav), "D3D11 storage view");
@@ -36,7 +50,8 @@ class D3D11Device final : public Device {
       desc.MiscFlags = 0;
       check(device_->CreateBuffer(&desc, nullptr, &b.readback), "D3D11 readback buffer");
     } else check(device_->CreateShaderResourceView(b.data.Get(), nullptr, &b.srv), "D3D11 texture view");
-    return b;
+    b.bytes = bytes;
+    retained = std::move(b);
   }
   void read(Buffer& buffer, std::vector<uint32_t>& output) {
     D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -45,6 +60,10 @@ class D3D11Device final : public Device {
     context_->Unmap(buffer.readback.Get(), 0);
   }
  public:
+  ~D3D11Device() override {
+    // An unfinished terminal submission is reclaimed by process teardown, not retried.
+    if (pending_) buffers_.release();
+  }
   D3D11Device() {
     D3D_FEATURE_LEVEL level = D3D_FEATURE_LEVEL_11_0;
     check(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_SINGLETHREADED,
@@ -65,10 +84,26 @@ class D3D11Device final : public Device {
     check(device_->CreateQuery(&query, &fence_), "D3D11 completion query");
   }
   std::string description() const override { return description_; }
+  bool retains_targets() const override { return true; }
   void run(Job& job, Counters& counters) override {
+    if (pending_) throw std::runtime_error("D3D11 renderer is stopped after an incomplete submission; restart with a lower scale.");
     auto commands = tiles(job);
-    if (commands.empty()) return;
-    Buffer colour = buffer(job.colour, true), depth = buffer(job.depth, true), texture = buffer(job.texture, false);
+    if (commands.empty() && (job.uploadTargets || !job.readbackTargets)) return;
+    const size_t retainedBytes = 2 * (std::max<size_t>(1, job.colour.size()) +
+                                     std::max<size_t>(1, job.depth.size())) * 4 +
+                                 std::max<size_t>(1, job.texture.size()) * 4;
+    if (retainedBytes > (384u << 20))
+      throw std::runtime_error("D3D11 retained buffer budget exceeded; restart at a lower internal scale.");
+    auto& colour = buffers_->colour;
+    auto& depth = buffers_->depth;
+    auto& texture = buffers_->texture;
+    if (job.uploadTargets) {
+      buffer(colour, job.colour, true); buffer(depth, job.depth, true);
+    } else if (!resident_ || colour.bytes != std::max<size_t>(1, job.colour.size()) * 4 ||
+               depth.bytes != std::max<size_t>(1, job.depth.size()) * 4) {
+      throw std::runtime_error("D3D11 retained-target dimensions changed without an upload.");
+    }
+    buffer(texture, job.texture, false);
     ID3D11UnorderedAccessView* outputs[] = {colour.uav.Get(), depth.uav.Get()};
     ID3D11ShaderResourceView* input = texture.srv.Get();
     ID3D11Buffer* cb = constants_.Get();
@@ -76,6 +111,7 @@ class D3D11Device final : public Device {
     context_->CSSetUnorderedAccessViews(0, 2, outputs, nullptr);
     context_->CSSetShaderResources(0, 1, &input);
     context_->CSSetConstantBuffers(0, 1, &cb);
+    pending_ = true;
     for (const auto& command : commands) {
       context_->UpdateSubresource(constants_.Get(), 0, nullptr, &command, 0, 0);
       context_->Dispatch((command.bounds[2] + 7) / 8, (command.bounds[3] + 7) / 8, 1);
@@ -83,8 +119,10 @@ class D3D11Device final : public Device {
     ID3D11UnorderedAccessView* none[] = {nullptr, nullptr};
     context_->CSSetUnorderedAccessViews(0, 2, none, nullptr);
     input = nullptr; context_->CSSetShaderResources(0, 1, &input);
-    context_->CopyResource(colour.readback.Get(), colour.data.Get());
-    context_->CopyResource(depth.readback.Get(), depth.data.Get());
+    if (job.readbackTargets) {
+      context_->CopyResource(colour.readback.Get(), colour.data.Get());
+      context_->CopyResource(depth.readback.Get(), depth.data.Get());
+    }
     context_->End(fence_.Get());
     context_->Flush();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -97,7 +135,10 @@ class D3D11Device final : public Device {
         throw std::runtime_error("D3D11 GPU completion exceeded 5 seconds; renderer stopped without retry.");
       Sleep(1);
     }
-    read(colour, job.colour); read(depth, job.depth);
+    if (job.readbackTargets) { read(colour, job.colour); read(depth, job.depth); }
+    pending_ = false;
+    resident_ = true;
+    counters.uploads += job.uploadTargets; counters.readbacks += job.readbackTargets;
     ++counters.submissions; counters.dispatches += commands.size(); counters.primitives += job.commands.size();
   }
 };
