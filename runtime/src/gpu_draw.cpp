@@ -10,6 +10,7 @@
 
 #include "gpu.h"
 #include "raster_fast.h"
+#include "render_surface.h"
 
 namespace psp {
 namespace ge {
@@ -285,6 +286,8 @@ struct Raster {
   uint32_t* r;
 
   uint8_t* fb = nullptr;
+  uint32_t fbAddr = 0, zAddr = 0;
+  int rasterScale = 1;
   uint32_t fbStride = 0;
   int fbFmt = 3, fbBpp = 4;
   uint8_t* zb = nullptr;
@@ -306,7 +309,7 @@ struct Raster {
   int cFmt = 3, cShift = 0, cMask = 0xFF, cStart = 0;
   uint32_t env = 0;
 
-  explicit Raster(Gpu& gpu) : g(gpu), st(gpu.stats_), r(gpu.r_) {}
+  explicit Raster(Gpu& gpu, bool collectStats = true) : g(gpu), st(collectStats ? gpu.stats_ : nullptr), r(gpu.r_) {}
 
 
   bool begin() {
@@ -317,7 +320,7 @@ struct Raster {
     clearZ = r[0xD3] & 0x400;
     fbFmt = r[0xD2] & 3;
     fbBpp = fbFmt == 3 ? 4 : 2;
-    uint32_t fbAddr = gaddr((r[0x9C] & 0xFFFFFF) | ((r[0x9D] & 0xFF0000) << 8));
+    fbAddr = gaddr((r[0x9C] & 0xFFFFFF) | ((r[0x9D] & 0xFF0000) << 8));
     fbStride = r[0x9D] & 0x7FF;
     sx1 = r[0xD4] & 0x3FF;
     sy1 = (r[0xD4] >> 10) & 0x3FF;
@@ -334,7 +337,7 @@ struct Raster {
     ztestOn = r[0x23] & 1;
     zb = nullptr;
     if (ztestOn || (clear && clearZ)) {
-      uint32_t zAddr = gaddr((r[0x9E] & 0xFFFFFF) | ((r[0x9F] & 0xFF0000) << 8));
+      zAddr = gaddr((r[0x9E] & 0xFFFFFF) | ((r[0x9F] & 0xFF0000) << 8));
       zStride = r[0x9F] & 0x7FF;
       uint32_t zend = region_end(zAddr);
       if (zend && zStride) {
@@ -384,6 +387,70 @@ struct Raster {
     keepReady = true;
     decide_fast();
     return true;
+  }
+
+  template<class Draw> void render_both(Draw draw) {
+    if (surface::scale() == 1) { draw(*this); return; }
+    fast::sync();
+    auto colour = surface::acquire(fbAddr, fbStride, fbFmt, sy2 + 1);
+    auto depth = zb ? surface::acquire(zAddr, zStride, -1, sy2 + 1) : nullptr;
+    bool usable = colour && (!zb || depth);
+    if (zb && surface::overlaps(fbAddr, size_t(fbStride) * (sy2 + 1) * fbBpp,
+                               zAddr, size_t(zStride) * (sy2 + 1) * 2)) {
+      usable = false;
+      surface::diagnostic("Aliased colour/depth target: native rendering only for this draw.");
+    }
+    if (texOn) {
+      const size_t bytes = texture_span();
+      if (surface::is_target(tAddr, bytes))
+        surface::diagnostic("Render-target texture feedback samples native VRAM; source detail remains native resolution.");
+      if (surface::overlaps(tAddr, bytes, fbAddr, size_t(fbStride) * (sy2 + 1) * fbBpp) ||
+          (zb && surface::overlaps(tAddr, bytes, zAddr, size_t(zStride) * (sy2 + 1) * 2))) {
+        usable = false;
+        surface::diagnostic("Self-texturing draw: host target reseeded from the native result.");
+      }
+    }
+    draw(*this);
+    fast::sync();
+    surface::written(fbAddr, size_t(fbStride) * (sy2 + 1) * fbBpp);
+    if (zb) surface::written(zAddr, size_t(zStride) * (sy2 + 1) * 2);
+    if (!usable) {
+      if (colour) colour->reseed();
+      if (depth) depth->reseed();
+      return;
+    }
+    colour->accept_native();
+    colour->dirty = false;
+    if (depth) { depth->accept_native(); depth->dirty = false; }
+    Raster high(g, false);
+    if (!high.begin()) {
+      surface::diagnostic("Host replay state unavailable: target reseeded from native VRAM.");
+      colour->reseed();
+      if (depth) depth->reseed();
+      return;
+    }
+    const int scale = surface::scale();
+    high.rasterScale = scale;
+    high.fb = colour->pixels.data(); high.fbStride *= scale;
+    if (depth) { high.zb = depth->pixels.data(); high.zStride *= scale; }
+    high.sx1 *= scale; high.sy1 *= scale;
+    high.sx2 = (high.sx2 + 1) * scale - 1; high.sy2 = (high.sy2 + 1) * scale - 1;
+    high.decide_fast();
+    draw(high);
+    fast::sync();
+  }
+
+  size_t texture_span() const {
+    if (tFmt >= 8) {
+      const size_t block = tFmt == 8 ? 8 : 16;
+      return (size_t((tH - 1) / 4) * (tBufW / 4) + (tW - 1) / 4 + 1) * block;
+    }
+    const size_t bits = tFmt == 3 || tFmt == 7 ? 32 : tFmt == 4 ? 4 : tFmt == 5 ? 8 : 16;
+    const size_t row = size_t(tBufW) * bits / 8;
+    const size_t x = size_t(tW - 1) * bits / 8;
+    // Include the complete last swizzle tile, even for sub-tile textures/strides.
+    if (tSwz) return size_t((tH - 1) / 8) * row * 8 + (x / 16) * 128 + 128;
+    return size_t(tH - 1) * row + x + std::max<size_t>(1, bits / 8);
   }
 
   bool setup_texture() {
@@ -1001,25 +1068,33 @@ struct Raster {
   void line(const SV& a, const SV& b) {
     fast::sync();
     float dx = b.x - a.x, dy = b.y - a.y;
-    int steps = static_cast<int>(std::ceil(std::max(std::fabs(dx), std::fabs(dy))));
+    int steps = static_cast<int>(std::ceil(std::max(std::fabs(dx), std::fabs(dy)) / rasterScale));
     if (steps < 1) steps = 1;
     for (int i = 0; i <= steps; ++i) {
       float t = static_cast<float>(i) / steps;
-      int x = static_cast<int>(std::floor(a.x + dx * t)), y = static_cast<int>(std::floor(a.y + dy * t));
+      int x = static_cast<int>(std::floor((a.x + dx * t) / rasterScale)) * rasterScale;
+      int y = static_cast<int>(std::floor((a.y + dy * t) / rasterScale)) * rasterScale;
       float col[4];
       for (int k = 0; k < 4; ++k) col[k] = flat ? b.col[k] : a.col[k] + (b.col[k] - a.col[k]) * t;
       float z = a.z + (b.z - a.z) * t;
       float u = a.u + (b.u - a.u) * t, v = a.v + (b.v - a.v) * t;
-      if (clear) clear_pixel(x, y, z, col);
-      else fragment(x, y, z, col, a.spec, a.fog, u, v);
+      for (int oy = 0; oy < rasterScale; ++oy)
+        for (int ox = 0; ox < rasterScale; ++ox) {
+          if (clear) clear_pixel(x + ox, y + oy, z, col);
+          else fragment(x + ox, y + oy, z, col, a.spec, a.fog, u, v);
+        }
     }
   }
 
   void point(const SV& a) {
     fast::sync();
-    int x = static_cast<int>(std::floor(a.x)), y = static_cast<int>(std::floor(a.y));
-    if (clear) clear_pixel(x, y, a.z, a.col);
-    else fragment(x, y, a.z, a.col, a.spec, a.fog, a.u, a.v);
+    int x = static_cast<int>(std::floor(a.x / rasterScale)) * rasterScale;
+    int y = static_cast<int>(std::floor(a.y / rasterScale)) * rasterScale;
+    for (int dy = 0; dy < rasterScale; ++dy)
+      for (int dx = 0; dx < rasterScale; ++dx) {
+        if (clear) clear_pixel(x + dx, y + dy, a.z, a.col);
+        else fragment(x + dx, y + dy, a.z, a.col, a.spec, a.fog, a.u, a.v);
+      }
   }
 
   // ---- transform ----
@@ -1032,16 +1107,16 @@ struct Raster {
     s.v = c.v;
     s.fog = c.fog;
     if (through) {
-      s.x = c.clip[0];
-      s.y = c.clip[1];
+      s.x = c.clip[0] * rasterScale;
+      s.y = c.clip[1] * rasterScale;
       s.z = c.clip[2];
       s.invw = 1;
       return s;
     }
     float iw = 1.0f / c.clip[3];
     s.invw = iw;
-    s.x = c.clip[0] * iw * vpScale[0] + vpCenter[0] - offX;
-    s.y = c.clip[1] * iw * vpScale[1] + vpCenter[1] - offY;
+    s.x = (c.clip[0] * iw * vpScale[0] + vpCenter[0] - offX) * rasterScale;
+    s.y = (c.clip[1] * iw * vpScale[1] + vpCenter[1] - offY) * rasterScale;
     s.z = c.clip[2] * iw * vpScale[2] + vpCenter[2];
     return s;
   }
@@ -1335,6 +1410,7 @@ void fetch(const Gpu& g, const VType& vt, uint32_t vaddr, uint32_t iaddr, uint32
 }  // namespace
 
 void Gpu::draw_prim(uint32_t arg) {
+  surface::NativeScope nativeScope;
   const uint32_t count = arg & 0xFFFF;
   const int prim = (arg >> 16) & 7;
   const VType vt = parse_vtype(r_[0x12]);
@@ -1372,7 +1448,7 @@ void Gpu::draw_prim(uint32_t arg) {
                    verts[i].clip[1], verts[i].clip[2], verts[i].u, verts[i].v, verts[i].col[0], verts[i].col[1],
                    verts[i].col[2], verts[i].col[3]);
   auto t0 = std::chrono::steady_clock::now();
-  R.assemble(vt, verts, prim);
+  R.render_both([&](Raster& target) { target.assemble(vt, verts, prim); });
   if (stats_) {
     int cat = (r_[0xD3] & 1) ? 0 : (R.texOn ? (R.blendOn ? 3 : 2) : 1);
     stats_->catNs[cat] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
@@ -1414,6 +1490,7 @@ std::vector<float> make_knots(int n, int type) {
 }  // namespace
 
 void Gpu::draw_patch(uint32_t arg, bool spline) {
+  surface::NativeScope nativeScope;
   const int ucount = arg & 0xFF, vcount = (arg >> 8) & 0xFF;
   const int utype = (arg >> 16) & 3, vtype = (arg >> 18) & 3;
   const VType vt = parse_vtype(r_[0x12]);
@@ -1510,19 +1587,22 @@ void Gpu::draw_patch(uint32_t arg, bool spline) {
       R.transform(vt, o, grid[static_cast<size_t>(j) * nu + i]);
     }
   }
-  for (int j = 0; j + 1 < nv; ++j) {
-    for (int i = 0; i + 1 < nu; ++i) {
-      const CV& a = grid[static_cast<size_t>(j) * nu + i];
-      const CV& b = grid[static_cast<size_t>(j) * nu + i + 1];
-      const CV& c = grid[static_cast<size_t>(j + 1) * nu + i];
-      const CV& d = grid[static_cast<size_t>(j + 1) * nu + i + 1];
-      R.emit_tri(vt, a, c, b);
-      R.emit_tri(vt, b, c, d);
+  R.render_both([&](Raster& target) {
+    for (int j = 0; j + 1 < nv; ++j) {
+      for (int i = 0; i + 1 < nu; ++i) {
+        const CV& a = grid[static_cast<size_t>(j) * nu + i];
+        const CV& b = grid[static_cast<size_t>(j) * nu + i + 1];
+        const CV& c = grid[static_cast<size_t>(j + 1) * nu + i];
+        const CV& d = grid[static_cast<size_t>(j + 1) * nu + i + 1];
+        target.emit_tri(vt, a, c, b);
+        target.emit_tri(vt, b, c, d);
+      }
     }
-  }
+  });
 }
 
 void Gpu::bbox(uint32_t arg) {
+  surface::NativeScope nativeScope;
   const uint32_t count = arg & 0xFFFF;
   const VType vt = parse_vtype(r_[0x12]);
   bboxVisible_ = 1;

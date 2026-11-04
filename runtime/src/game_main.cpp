@@ -14,6 +14,9 @@
 #include <psp/ge_debug.h>
 #include <psp/kernel.h>
 #include <psp/runtime.h>
+#include <psp/video_settings.h>
+#include "render_surface.h"
+#include "platform.h"
 
 #include "sampler.h"
 #include "bytes.h"
@@ -29,6 +32,7 @@ static void usage(const char* prog);
 
 namespace psp { namespace k { void display_set_dump_path(const std::string& p); void display_set_auto_buttons(uint32_t mask); void display_set_press_script(const std::string& s); void display_set_profile(bool on); } }
 namespace psp { namespace k { void display_set_gamepad_script(const std::string& s); } }
+namespace psp { namespace k { void display_set_native_dump_path(const std::string& s); } }
 
 static void usage(const char* prog) {
   std::fprintf(stderr,
@@ -38,6 +42,8 @@ static void usage(const char* prog) {
                "  --modules directory with decrypted helper modules (e.g. libfont.prx) lifted via --helper\n"
                "  --save    directory backing ms0:/ (default: ./savedata)\n"
                "  --headless  no window or audio\n"
+               "  --render-scale <1..8>  internal resolution (default 1; higher scales use a native-authoritative host shadow)\n"
+               "  --window-size <480x272|960x544|1440x816|1920x1088>  initial window client size\n"
                "  --controls <modern|legacy>  modern gamepad camera/weapons (default) or original PSP mapping\n"
                "  --controls-trace  log native direct equipment selections\n"
                "  --prompts <original|modern>  controller icons (default original; identified menus only)\n"
@@ -52,6 +58,7 @@ static void usage(const char* prog) {
                "  --profile  print frame rate, GE and present times every 5 seconds\n"
 "  --press <sec:mask,...>  scripted presses: time:mask[:hold[:lx:ly]] with time/hold in game seconds, stick -128..127\n"
                "  --dump-frame <png>  keep writing the displayed frame to this PNG (local debugging aid)\n"
+               "  --dump-native-frame <png>  also capture authoritative 480x272 pixels at the same dump cadence\n"
                "  --auto-press <mask>  periodically press these PSP buttons (e.g. 0x8 = Start) for unattended runs\n"
                "  --timeout stop after this many seconds (and write the report)\n",
                prog);
@@ -77,12 +84,23 @@ int main(int argc, char** argv) {
   int timeoutSec = 0;
   bool modernControls = true, controlsTrace = false;
   bool modernPrompts = false;
+  int renderScale = 1;
+  psp::video::Size windowSize{960, 544};
   psp::KernelConfig cfg;
   psp::GeDebugOptions geOpt;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     bool more = i + 1 < argc;
     if (a == "--disc" && more) cfg.discRoot = argv[++i];
+    else if ((a == "--render-scale" || a == "--window-size") && more) {
+      try {
+        if (a == "--render-scale") renderScale = psp::video::render_scale(argv[++i]);
+        else windowSize = psp::video::window_size(argv[++i]);
+      } catch (const std::invalid_argument& e) {
+        std::fprintf(stderr, "%s\n", e.what());
+        return 2;
+      }
+    }
     else if (a == "--controls" && more) {
       std::string mode = argv[++i];
       if (mode != "modern" && mode != "legacy") {
@@ -133,6 +151,7 @@ int main(int argc, char** argv) {
       }
     }
     else if (a == "--dump-frame" && more) psp::k::display_set_dump_path(argv[++i]);
+    else if (a == "--dump-native-frame" && more) psp::k::display_set_native_dump_path(argv[++i]);
     else if (module.empty() && a[0] != '-') module = a;
     else {
       usage(argv[0]);
@@ -155,6 +174,10 @@ int main(int argc, char** argv) {
 
   int code = 0;
   try {
+    psp::ge::surface::set_scale(renderScale);
+    psp::plat::set_window_size(windowSize.width, windowSize.height);
+    std::fprintf(stderr, "[video] internal %dx (%dx%d), initial window %dx%d; guest buffers remain native\n",
+                 renderScale, 480 * renderScale, 272 * renderScale, windowSize.width, windowSize.height);
     mgspo::PrxImage img = mgspo::loadPrx(mgspo::readFile(module), kModuleBase);
     psp::init_memory();
     psp::ge_set_debug(geOpt);

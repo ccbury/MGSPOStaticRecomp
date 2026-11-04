@@ -10,8 +10,9 @@
 namespace {
 constexpr UINT kLog = WM_APP + 1, kDone = WM_APP + 2;
 enum { Iso = 101, Browse, Controls, SaveSettings, Launch, Build, Check, Update, Cancel, Restart,
-       Status, Log, Revision, Prompts };
-HWND g_window, g_iso, g_controls, g_prompts, g_status, g_log, g_revision;
+       Status, Log, Revision, Prompts, RenderScale, WindowSize };
+HWND g_window, g_iso, g_controls, g_prompts, g_scale, g_windowSize, g_status, g_log, g_revision;
+constexpr const char* kWindowSizes[] = {"480x272", "960x544", "1440x816", "1920x1088"};
 std::thread g_worker;
 bool g_busy = false, g_closing = false;
 Ctx g_context;
@@ -52,7 +53,7 @@ void appendLog(const wstring& text) {
 }
 
 void buttons() {
-  for (int id : {Iso, Browse, Controls, Prompts, SaveSettings, Launch, Build, Check})
+  for (int id : {Iso, Browse, Controls, Prompts, RenderScale, WindowSize, SaveSettings, Launch, Build, Check})
     EnableWindow(GetDlgItem(g_window, id), !g_busy && g_restart.empty());
   EnableWindow(GetDlgItem(g_window, Update), !g_busy && g_restart.empty() && !g_update.available.empty());
   EnableWindow(GetDlgItem(g_window, Restart), !g_busy && !g_restart.empty());
@@ -65,6 +66,11 @@ void readSettings() {
   g_context.opt.iso = iso;
   g_context.opt.controls = SendMessageW(g_controls, CB_GETCURSEL, 0, 0) == 1 ? "legacy" : "modern";
   g_context.opt.prompts = SendMessageW(g_prompts, CB_GETCURSEL, 0, 0) == 1 ? "modern" : "original";
+  LRESULT scale = SendMessageW(g_scale, CB_GETCURSEL, 0, 0);
+  LRESULT size = SendMessageW(g_windowSize, CB_GETCURSEL, 0, 0);
+  if (scale < 0 || scale > 7 || size < 0 || size >= 4) die(L"Select an internal render scale and window size.");
+  g_context.opt.renderScale = std::to_string(scale + 1);
+  g_context.opt.windowSize = kWindowSizes[size];
 }
 
 void persistSettings(Ctx& context) {
@@ -72,6 +78,8 @@ void persistSettings(Ctx& context) {
   context.config.set("iso", toUtf8(context.opt.iso));
   context.config.set("controls", context.opt.controls);
   context.config.set("prompts", context.opt.prompts);
+  context.config.set("render_scale", context.opt.renderScale);
+  context.config.set("window_size", context.opt.windowSize);
   context.config.set("work", toUtf8(context.work.wstring()));
   context.config.save();
 }
@@ -147,6 +155,8 @@ void startOperation(int id) {
 void startDesktop(const fs::path& desktop, const Ctx& context) {
   wstring cmd = quoteArg(desktop.wstring()) + L" --config " + quoteArg(context.config.file.wstring()) +
                 L" --work " + quoteArg(context.work.wstring());
+  auto video = videoOptions(context);
+  cmd += L" --render-scale " + toWide(video.first) + L" --window-size " + toWide(video.second);
   STARTUPINFOW si{sizeof(si)};
   PROCESS_INFORMATION pi{};
   std::vector<wchar_t> text(cmd.begin(), cmd.end());
@@ -277,7 +287,7 @@ int desktopMain(int argc, wchar_t** argv, int show) {
   RegisterClassW(&cls);
   g_window = CreateWindowW(cls.lpszClassName, L"MGSPO - Portable Ops Launcher",
       WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT,
-      900, 690, nullptr, nullptr, cls.hInstance, nullptr);
+      900, 738, nullptr, nullptr, cls.hInstance, nullptr);
   if (!g_window) die(L"Could not create launcher window.");
   control(L"STATIC", L"Metal Gear Solid: Portable Ops  |  Local build from your own US ISO", 0, 0, 20, 16, 850, 24);
   control(L"STATIC", L"ISO image", 0, 0, 20, 51, 90, 24);
@@ -299,22 +309,39 @@ int desktopMain(int argc, wchar_t** argv, int show) {
   if (!prompts.empty() && prompts != "original" && prompts != "modern") die(L"Invalid prompts setting in launcher.ini.");
   SendMessageW(g_prompts, CB_SETCURSEL, prompts == "modern" ? 1 : 0, 0);
   control(L"BUTTON", L"Save settings", WS_TABSTOP, SaveSettings, 720, 86, 145, 28);
-  control(L"STATIC", (L"Work / saves: " + g_context.work.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 126, 845, 23);
-  control(L"STATIC", (L"Source: " + g_context.source.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 151, 845, 23);
-  control(L"BUTTON", L"Launch game", WS_TABSTOP | BS_DEFPUSHBUTTON, Launch, 20, 188, 145, 35);
-  control(L"BUTTON", L"Build / setup ISO", WS_TABSTOP, Build, 175, 188, 155, 35);
-  control(L"BUTTON", L"Check updates", WS_TABSTOP, Check, 340, 188, 140, 35);
-  control(L"BUTTON", L"Update / rebuild", WS_TABSTOP, Update, 490, 188, 155, 35);
-  control(L"BUTTON", L"Cancel", WS_TABSTOP, Cancel, 655, 188, 90, 35);
-  control(L"BUTTON", L"Restart UI", WS_TABSTOP, Restart, 755, 188, 110, 35);
+  control(L"STATIC", L"Render scale", 0, 0, 20, 130, 95, 24);
+  g_scale = control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, RenderScale, 115, 126, 220, 240);
+  for (int scale = 1; scale <= 8; ++scale) {
+    auto label = std::to_wstring(scale) + L"x - " + std::to_wstring(480 * scale) + L"x" +
+                 std::to_wstring(272 * scale) + (scale == 1 ? L" (native)" : L" (software)");
+    SendMessageW(g_scale, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+  }
+  control(L"STATIC", L"Window", 0, 0, 350, 130, 60, 24);
+  g_windowSize = control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, WindowSize, 415, 126, 180, 130);
+  auto video = videoOptions(g_context);
+  SendMessageW(g_scale, CB_SETCURSEL, psp::video::render_scale(video.first) - 1, 0);
+  for (int i = 0; i < 4; ++i) {
+    auto label = toWide(kWindowSizes[i]);
+    SendMessageW(g_windowSize, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+    if (video.second == kWindowSizes[i]) SendMessageW(g_windowSize, CB_SETCURSEL, i, 0);
+  }
+  control(L"STATIC", L"Next launch; cost grows with scale squared.", 0, 0, 610, 130, 255, 40);
+  control(L"STATIC", (L"Work / saves: " + g_context.work.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 174, 845, 23);
+  control(L"STATIC", (L"Source: " + g_context.source.wstring()).c_str(), SS_PATHELLIPSIS, 0, 20, 199, 845, 23);
+  control(L"BUTTON", L"Launch game", WS_TABSTOP | BS_DEFPUSHBUTTON, Launch, 20, 236, 145, 35);
+  control(L"BUTTON", L"Build / setup ISO", WS_TABSTOP, Build, 175, 236, 155, 35);
+  control(L"BUTTON", L"Check updates", WS_TABSTOP, Check, 340, 236, 140, 35);
+  control(L"BUTTON", L"Update / rebuild", WS_TABSTOP, Update, 490, 236, 155, 35);
+  control(L"BUTTON", L"Cancel", WS_TABSTOP, Cancel, 655, 236, 90, 35);
+  control(L"BUTTON", L"Restart UI", WS_TABSTOP, Restart, 755, 236, 110, 35);
   g_revision = control(L"STATIC", L"Updates are manual. Check fetches main; Update stages a dedicated clone and rebuilds locally.",
-                       0, Revision, 20, 236, 845, 44);
+                       0, Revision, 20, 284, 845, 44);
   bool cached = fs::exists(g_context.build / L"mgspo-game.exe") && !g_context.state.get("built").empty();
   g_status = control(L"EDIT", cached ? L"Cached game found. Launch validates freshness before running." :
       iso.empty() ? L"First run: choose an ISO. Build includes all stages; reserve 20 GiB and time for a long first build." :
       L"Build needed: Build / setup ISO includes all stages. One compiler job; the first build can take tens of minutes or longer.",
-      ES_READONLY | ES_MULTILINE, Status, 20, 286, 845, 54);
-  g_log = control(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL, Log, 20, 350, 845, 290);
+      ES_READONLY | ES_MULTILINE, Status, 20, 334, 845, 54);
+  g_log = control(L"EDIT", L"", ES_READONLY | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL, Log, 20, 398, 845, 290);
   g_output = [](const wstring& text) {
     auto line = std::make_unique<wstring>(text);
     if (PostMessageW(g_window, kLog, 0, reinterpret_cast<LPARAM>(line.get()))) line.release();

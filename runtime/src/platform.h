@@ -7,6 +7,7 @@ namespace psp {
 namespace plat {
 
 void init(bool headless);  // timer resolution etc.; opens the window unless headless
+void set_window_size(int width, int height);  // initial client size; call before init
 
 // Display. pixels are BGRA8888, width*height, tightly packed.
 void present(const uint32_t* bgra, int width, int height);

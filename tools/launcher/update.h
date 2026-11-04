@@ -171,11 +171,13 @@ fs::path performUpdate(Ctx& c, const UpdateInfo& expected, OperationLock& lock, 
   // The new CLI acquires this same work lock. A competing operation fails safely.
   lock.release();
   string prompts = c.opt.prompts.empty() ? c.config.get("prompts") : c.opt.prompts;
+  auto video = videoOptions(c);
   if (prompts.empty()) prompts = "original";
   if (runProcess((tools / L"mgspo-launcher.exe").wstring(),
                  {L"build", L"--iso", c.iso.wstring(), L"--work", c.work.wstring(),
                   L"--source", source.wstring(), L"--config", c.config.file.wstring(),
                   L"--controls", toWide(c.opt.controls),
+                  L"--render-scale", toWide(video.first), L"--window-size", toWide(video.second),
                   L"--prompts", toWide(prompts)},
                  {}, c.logs / L"update-game.log", nullptr) != 0)
     die(L"Updated game build failed. Current launcher is kept. Managed source may be updated; "

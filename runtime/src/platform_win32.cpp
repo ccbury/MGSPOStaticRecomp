@@ -19,14 +19,15 @@
 
 #include "platform.h"
 #include <psp/game_controls.h>
+#include <psp/video_settings.h>
 
 namespace psp {
 namespace plat {
 
 namespace {
 
-constexpr int kScale = 2;
-constexpr int kW = 480, kH = 272;
+int g_initialWidth = 960, g_initialHeight = 544;
+int g_frameWidth = 480, g_frameHeight = 272;
 
 std::atomic<bool> g_quit{false};
 std::atomic<bool> g_foreground{false};
@@ -38,6 +39,31 @@ std::vector<uint32_t> g_frame;
 std::condition_variable g_ready;
 bool g_windowUp = false;
 
+void paint_frame(HWND h, HDC dc) {
+  std::lock_guard<std::mutex> lk(g_frameMutex);
+  if (g_frame.empty()) return;
+  RECT rc;
+  GetClientRect(h, &rc);
+  BITMAPINFO bi{};
+  bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  bi.bmiHeader.biWidth = g_frameWidth;
+  bi.bmiHeader.biHeight = -g_frameHeight;
+  bi.bmiHeader.biPlanes = 1;
+  bi.bmiHeader.biBitCount = 32;
+  bi.bmiHeader.biCompression = BI_RGB;
+  SetStretchBltMode(dc, (rc.right >= g_frameWidth * 2) ? COLORONCOLOR : HALFTONE);
+  SetBrushOrgEx(dc, 0, 0, nullptr);
+  auto fitted = video::fit({rc.right, rc.bottom}, {g_frameWidth, g_frameHeight});
+  int dw = fitted.width, dh = fitted.height;
+  int dx = (rc.right - dw) / 2, dy = (rc.bottom - dh) / 2;
+  PatBlt(dc, 0, 0, rc.right, dy, BLACKNESS);
+  PatBlt(dc, 0, dy + dh, rc.right, rc.bottom - dy - dh, BLACKNESS);
+  PatBlt(dc, 0, dy, dx, dh, BLACKNESS);
+  PatBlt(dc, dx + dw, dy, rc.right - dx - dw, dh, BLACKNESS);
+  if (dw > 0 && dh > 0)
+    StretchDIBits(dc, dx, dy, dw, dh, 0, 0, g_frameWidth, g_frameHeight, g_frame.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
+}
+
 LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
   switch (msg) {
     case WM_CLOSE:
@@ -45,35 +71,13 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM w, LPARAM l) {
       return 0;
     case WM_SETFOCUS: g_foreground = true; return 0;
     case WM_KILLFOCUS: g_foreground = false; return 0;
+    case WM_SIZE: InvalidateRect(h, nullptr, FALSE); return 0;
     case WM_ERASEBKGND: return 1;
+    case WM_PRINTCLIENT: paint_frame(h, reinterpret_cast<HDC>(w)); return 0;
     case WM_PAINT: {
       PAINTSTRUCT ps;
       HDC dc = BeginPaint(h, &ps);
-      std::lock_guard<std::mutex> lk(g_frameMutex);
-      if (!g_frame.empty()) {
-        RECT rc;
-        GetClientRect(h, &rc);
-        BITMAPINFO bi{};
-        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = kW;
-        bi.bmiHeader.biHeight = -kH;
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = BI_RGB;
-        SetStretchBltMode(dc, (rc.right >= kW * 2) ? COLORONCOLOR : HALFTONE);
-        SetBrushOrgEx(dc, 0, 0, nullptr);
-        // keep the 480x272 aspect ratio and fill the rest with black
-        int dw = rc.right, dh = rc.bottom;
-        if (dw * kH > dh * kW) dw = dh * kW / kH;
-        else dh = dw * kH / kW;
-        int dx = (rc.right - dw) / 2, dy = (rc.bottom - dh) / 2;
-        PatBlt(dc, 0, 0, rc.right, dy, BLACKNESS);
-        PatBlt(dc, 0, dy + dh, rc.right, rc.bottom - dy - dh, BLACKNESS);
-        PatBlt(dc, 0, dy, dx, dh, BLACKNESS);
-        PatBlt(dc, dx + dw, dy, rc.right - dx - dw, dh, BLACKNESS);
-        if (dw > 0 && dh > 0)
-          StretchDIBits(dc, dx, dy, dw, dh, 0, 0, kW, kH, g_frame.data(), &bi, DIB_RGB_COLORS, SRCCOPY);
-      }
+      paint_frame(h, dc);
       EndPaint(h, &ps);
       return 0;
     }
@@ -88,7 +92,7 @@ void window_main() {
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   wc.lpszClassName = "mgspo_window";
   RegisterClassA(&wc);
-  RECT rc{0, 0, kW * kScale, kH * kScale};
+  RECT rc{0, 0, g_initialWidth, g_initialHeight};
   DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME;
   AdjustWindowRect(&rc, style, FALSE);
   g_hwnd = CreateWindowA("mgspo_window", "Metal Gear Solid: Portable Ops", style | WS_VISIBLE, CW_USEDEFAULT,
@@ -169,11 +173,20 @@ void init(bool headless) {
   g_ready.wait_for(lk, std::chrono::seconds(5), [] { return g_windowUp; });
 }
 
+void set_window_size(int width, int height) {
+  auto size = video::window_size(std::to_string(width) + "x" + std::to_string(height));
+  g_initialWidth = size.width;
+  g_initialHeight = size.height;
+}
+
 void present(const uint32_t* bgra, int width, int height) {
-  if (g_headless || !g_hwnd || width != kW || height != kH) return;
+  if (g_headless || !g_hwnd) return;
+  if (!bgra || width < 480 || width > 3840 || width % 480 != 0 || height != (width / 480) * 272)
+    throw std::invalid_argument("Unsupported display surface dimensions (expected 1x through 8x PSP dimensions).");
   {
     std::lock_guard<std::mutex> lk(g_frameMutex);
     g_frame.assign(bgra, bgra + width * height);
+    g_frameWidth = width; g_frameHeight = height;
   }
   InvalidateRect(g_hwnd, nullptr, FALSE);
 }

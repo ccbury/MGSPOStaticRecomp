@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include "../stage_inventory.h"
+#include "../../runtime/include/psp/video_settings.h"
 
 namespace fs = std::filesystem;
 using std::string;
@@ -280,6 +281,7 @@ struct Options {
   wstring configPath;
   string controls;
   string prompts;
+  string renderScale, windowSize;
   std::vector<wstring> gameArgs;
   bool noRelaunch = false;
   bool saves = false;
@@ -737,9 +739,21 @@ void ensureBuilt(Ctx& c, bool forceLift) {
   stepBuild(c, forceLift);
 }
 
+std::pair<string, string> videoOptions(const Ctx& c) {
+  string scale = c.opt.renderScale.empty() ? c.config.get("render_scale") : c.opt.renderScale;
+  string size = c.opt.windowSize.empty() ? c.config.get("window_size") : c.opt.windowSize;
+  if (scale.empty()) scale = "1";
+  if (size.empty()) size = "960x544";
+  try { psp::video::render_scale(scale); psp::video::window_size(size); }
+  catch (const std::invalid_argument& error) { die(toWide(error.what()) + L" Check graphics settings in " + c.config.file.wstring()); }
+  return {scale, size};
+}
+
 std::vector<wstring> gameArguments(const Ctx& c) {
   std::vector<wstring> args = {(c.boot / L"boot.elf").wstring(), L"--disc", c.disc.wstring(), L"--iso", c.iso.wstring(),
                                L"--save", c.save.wstring()};
+  auto video = videoOptions(c);
+  args.insert(args.end(), {L"--render-scale", toWide(video.first), L"--window-size", toWide(video.second)});
   string controls = c.opt.controls.empty() ? c.config.get("controls") : c.opt.controls;
   if (controls.empty()) controls = "modern";
   if (controls != "modern" && controls != "legacy") die(L"Controls must be modern or legacy.");
@@ -861,6 +875,8 @@ void usage() {
       L"  --config <file>   alternate settings file\n"
       L"  --controls <modern|legacy>  input style (otherwise remembered setting)\n"
       L"  --prompts <original|modern> controller icons (original by default; identified menus only)\n"
+      L"  --render-scale <1..8> internal resolution (default 1; independent of window)\n"
+      L"  --window-size <480x272|960x544|1440x816|1920x1088> initial client size (default 960x544)\n"
       L"  --no-relaunch     accepted for compatibility; all stages now build up front, with no auto-relaunch\n"
       L"  --saves / --all   extra things for clean\n"
       L"  -- <args>         everything after -- is passed to mgspo-game (for example --headless --timeout 60)\n"
@@ -881,6 +897,13 @@ bool parse(int argc, wchar_t** argv, Options& o) {
     else if (a == L"--work" && more) o.work = argv[++i];
     else if (a == L"--source" && more) o.source = argv[++i];
     else if (a == L"--config" && more) o.configPath = argv[++i];
+    else if ((a == L"--render-scale" || a == L"--window-size") && more) {
+      string value = toUtf8(argv[++i]);
+      try {
+        if (a == L"--render-scale") { psp::video::render_scale(value); o.renderScale = value; }
+        else { psp::video::window_size(value); o.windowSize = value; }
+      } catch (const std::invalid_argument& error) { warn(toWide(error.what())); return false; }
+    }
     else if (a == L"--controls" && more) {
       o.controls = toUtf8(argv[++i]);
       if (o.controls != "modern" && o.controls != "legacy") { warn(L"Controls must be modern or legacy."); return false; }

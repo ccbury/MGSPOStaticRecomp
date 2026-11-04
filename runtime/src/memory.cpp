@@ -6,6 +6,7 @@
 
 #include <psp/cpu.h>
 #include <psp/memory.h>
+#include "render_surface.h"
 
 namespace psp {
 
@@ -22,6 +23,7 @@ void init_memory() {
 }
 
 void free_memory() {
+  ge::surface::reset();
   std::free(g_ram);
   std::free(g_vram);
   std::free(g_scratch);
@@ -118,7 +120,10 @@ void guest_fault(const std::string& what) {
 
 uint8_t* ptr_slow(uint32_t addr) {
   uint32_t p = addr & 0x3FFFFFFF;
-  if (p - kVramBase < kVramSize) return g_vram + (p - kVramBase);
+  if (p - kVramBase < kVramSize) {
+    ge::surface::native_access();
+    return g_vram + (p - kVramBase);
+  }
   if (p - kScratchBase < kScratchSize) return g_scratch + (p - kScratchBase);
   char msg[64];
   std::snprintf(msg, sizeof msg, "bad guest address 0x%08X", addr);
