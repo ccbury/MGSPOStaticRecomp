@@ -1,0 +1,8 @@
+file(READ "${INPUT}" CODE HEX)
+string(LENGTH "${CODE}" CODE_LENGTH)
+math(EXPR WORD_REMAINDER "${CODE_LENGTH} % 8")
+if(CODE_LENGTH LESS 40 OR NOT WORD_REMAINDER EQUAL 0 OR NOT CODE MATCHES "^03022307")
+  message(FATAL_ERROR "Compiler output is not a complete little-endian SPIR-V module.")
+endif()
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," CODE "${CODE}")
+file(WRITE "${OUTPUT}" "#pragma once\nalignas(4) inline constexpr unsigned char kHardwareSpirv[] = {${CODE}};\n")

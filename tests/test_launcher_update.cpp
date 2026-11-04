@@ -79,6 +79,7 @@ void fixtures(bool rebuild) {
   c.config.set("prompts", "modern");
   c.config.set("render_scale", "8");
   c.config.set("window_size", "1440x816");
+  c.config.set("renderer", "d3d12");
   c.config.save();
   write(c.work / L"save" / L"sentinel", "save must survive");
   fs::create_directories(seed);
@@ -98,12 +99,13 @@ int wmain(int argc, wchar_t** argv) {
 #else
   if (argc < 2 || std::wstring(argv[1]) != L"build") return 7;
   bool modernPrompts = false;
-  bool highRes = false, windowSize = false;
+  bool highRes = false, windowSize = false, renderer = false;
   for (int i=1;i+1<argc;++i)
     if (std::wstring(argv[i]) == L"--prompts") modernPrompts = std::wstring(argv[i+1]) == L"modern";
     else if (std::wstring(argv[i]) == L"--render-scale") highRes = std::wstring(argv[i+1]) == L"8";
     else if (std::wstring(argv[i]) == L"--window-size") windowSize = std::wstring(argv[i+1]) == L"1440x816";
-  if (!modernPrompts || !highRes || !windowSize) return 8;
+    else if (std::wstring(argv[i]) == L"--renderer") renderer = std::wstring(argv[i+1]) == L"d3d12";
+  if (!modernPrompts || !highRes || !windowSize || !renderer) return 8;
   for (int i=1;i+1<argc;++i) if (std::wstring(argv[i]) == L"--work") {
     std::filesystem::path work(argv[i+1]);
     HANDLE lock = CreateFileW((work / L".launcher-operation").c_str(), GENERIC_WRITE, 0,
@@ -175,6 +177,7 @@ int wmain(int argc, wchar_t** argv) {
     check(c.config.get("prompts") == "modern", "icon selection must survive update activation");
     check(c.config.get("render_scale") == "8" && c.config.get("window_size") == "1440x816",
           "independent graphics preferences must survive update activation");
+    check(c.config.get("renderer") == "d3d12", "renderer must survive update activation");
     check(activatedDesktop(c) == tools / L"mgspo-desktop.exe", "activation must select new staged UI");
     string desktop = c.config.get("desktop");
     c.config.set("desktop", toUtf8((fixture.root / L"mgspo-desktop.exe").wstring()));

@@ -22,6 +22,7 @@
 #include <vector>
 #include "../stage_inventory.h"
 #include "../../runtime/include/psp/video_settings.h"
+#include "../../runtime/src/hardware_renderer.h"
 
 namespace fs = std::filesystem;
 using std::string;
@@ -281,7 +282,7 @@ struct Options {
   wstring configPath;
   string controls;
   string prompts;
-  string renderScale, windowSize;
+  string renderScale, windowSize, renderer;
   std::vector<wstring> gameArgs;
   bool noRelaunch = false;
   bool saves = false;
@@ -749,11 +750,20 @@ std::pair<string, string> videoOptions(const Ctx& c) {
   return {scale, size};
 }
 
+string rendererOption(const Ctx& c) {
+  string value = c.opt.renderer.empty() ? c.config.get("renderer") : c.opt.renderer;
+  if (value.empty()) value = "software";
+  try { psp::ge::hardware::parse(value); }
+  catch (const std::invalid_argument& error) { die(toWide(error.what())); }
+  return value;
+}
+
 std::vector<wstring> gameArguments(const Ctx& c) {
   std::vector<wstring> args = {(c.boot / L"boot.elf").wstring(), L"--disc", c.disc.wstring(), L"--iso", c.iso.wstring(),
                                L"--save", c.save.wstring()};
   auto video = videoOptions(c);
   args.insert(args.end(), {L"--render-scale", toWide(video.first), L"--window-size", toWide(video.second)});
+  args.insert(args.end(), {L"--renderer", toWide(rendererOption(c))});
   string controls = c.opt.controls.empty() ? c.config.get("controls") : c.opt.controls;
   if (controls.empty()) controls = "modern";
   if (controls != "modern" && controls != "legacy") die(L"Controls must be modern or legacy.");
@@ -780,6 +790,9 @@ int launchGame(Ctx& c) {
 }
 
 int cmdRun(Ctx& c) {
+  const auto backend = psp::ge::hardware::parse(rendererOption(c));
+  if (backend != psp::ge::hardware::Backend::Software)
+    say(L"Renderer: " + toWide(psp::ge::hardware::probe(backend)));
   resolveIso(c);
   ensureBuilt(c, false);
   say(L"Starting the game (saves are kept in " + c.save.wstring() + L")");
@@ -876,6 +889,7 @@ void usage() {
       L"  --controls <modern|legacy>  input style (otherwise remembered setting)\n"
       L"  --prompts <original|modern> controller icons (original by default; identified menus only)\n"
       L"  --render-scale <1..8> internal resolution (default 1; independent of window)\n"
+      L"  --renderer <software|d3d11|d3d12|vulkan> raster backend (default software)\n"
       L"  --window-size <480x272|960x544|1440x816|1920x1088> initial client size (default 960x544)\n"
       L"  --no-relaunch     accepted for compatibility; all stages now build up front, with no auto-relaunch\n"
       L"  --saves / --all   extra things for clean\n"
@@ -897,6 +911,10 @@ bool parse(int argc, wchar_t** argv, Options& o) {
     else if (a == L"--work" && more) o.work = argv[++i];
     else if (a == L"--source" && more) o.source = argv[++i];
     else if (a == L"--config" && more) o.configPath = argv[++i];
+    else if (a == L"--renderer" && more) {
+      try { o.renderer = toUtf8(argv[++i]); psp::ge::hardware::parse(o.renderer); }
+      catch (const std::invalid_argument& error) { warn(toWide(error.what())); return false; }
+    }
     else if ((a == L"--render-scale" || a == L"--window-size") && more) {
       string value = toUtf8(argv[++i]);
       try {

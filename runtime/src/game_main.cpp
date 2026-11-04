@@ -16,6 +16,7 @@
 #include <psp/runtime.h>
 #include <psp/video_settings.h>
 #include "render_surface.h"
+#include "hardware_renderer.h"
 #include "platform.h"
 
 #include "sampler.h"
@@ -42,6 +43,8 @@ static void usage(const char* prog) {
                "  --modules directory with decrypted helper modules (e.g. libfont.prx) lifted via --helper\n"
                "  --save    directory backing ms0:/ (default: ./savedata)\n"
                "  --headless  no window or audio\n"
+               "  --renderer <software|d3d11|d3d12|vulkan>  GPU raster backend (default software)\n"
+               "  --renderer-info  validate selected backend/device without loading game content\n"
                "  --render-scale <1..8>  internal resolution (default 1; higher scales use a native-authoritative host shadow)\n"
                "  --window-size <480x272|960x544|1440x816|1920x1088>  initial window client size\n"
                "  --controls <modern|legacy>  modern gamepad camera/weapons (default) or original PSP mapping\n"
@@ -85,6 +88,8 @@ int main(int argc, char** argv) {
   bool modernControls = true, controlsTrace = false;
   bool modernPrompts = false;
   int renderScale = 1;
+  auto renderer = psp::ge::hardware::Backend::Software;
+  bool rendererInfo = false;
   psp::video::Size windowSize{960, 544};
   psp::KernelConfig cfg;
   psp::GeDebugOptions geOpt;
@@ -92,6 +97,11 @@ int main(int argc, char** argv) {
     std::string a = argv[i];
     bool more = i + 1 < argc;
     if (a == "--disc" && more) cfg.discRoot = argv[++i];
+    else if (a == "--renderer" && more) {
+      try { renderer = psp::ge::hardware::parse(argv[++i]); }
+      catch (const std::invalid_argument& e) { std::fprintf(stderr, "%s\n", e.what()); return 2; }
+    }
+    else if (a == "--renderer-info") rendererInfo = true;
     else if ((a == "--render-scale" || a == "--window-size") && more) {
       try {
         if (a == "--render-scale") renderScale = psp::video::render_scale(argv[++i]);
@@ -158,6 +168,10 @@ int main(int argc, char** argv) {
       return 2;
     }
   }
+  if (rendererInfo) {
+    try { std::printf("%s\n", psp::ge::hardware::probe(renderer).c_str()); return 0; }
+    catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
+  }
   if (module.empty()) {
     usage(argv[0]);
     return 2;
@@ -167,6 +181,7 @@ int main(int argc, char** argv) {
     std::thread([=] {
       std::this_thread::sleep_for(std::chrono::seconds(timeoutSec));
       std::fprintf(stderr, "timeout reached, stopping\n");
+      psp::ge::hardware::report();
       write_report(reportPath);
       std::_Exit(0);
     }).detach();
@@ -174,6 +189,7 @@ int main(int argc, char** argv) {
 
   int code = 0;
   try {
+    psp::ge::hardware::select(renderer);
     psp::ge::surface::set_scale(renderScale);
     psp::plat::set_window_size(windowSize.width, windowSize.height);
     std::fprintf(stderr, "[video] internal %dx (%dx%d), initial window %dx%d; guest buffers remain native\n",
@@ -205,6 +221,7 @@ int main(int argc, char** argv) {
   }
 
   write_report(reportPath);
+  psp::ge::hardware::report();
   // other guest threads may still be parked on host threads, so skip normal teardown
   std::_Exit(code);
 }

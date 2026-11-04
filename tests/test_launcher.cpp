@@ -139,15 +139,25 @@ int wmain() {
     check(invalidPrompts, "invalid icons must fail explicitly");
     c.opt.prompts.clear();
     check(videoOptions(c) == std::make_pair(string("1"), string("960x544")), "old config must use native scale and existing window size");
+    check(rendererOption(c) == "software", "old config must default to software renderer");
     const string graphicsStamp = buildStamp(c);
     c.config.set("render_scale", "8");
     c.config.set("window_size", "1440x816");
+    c.config.set("renderer", "d3d12");
     args = gameArguments(c);
     auto hasPair = [&](const wchar_t* flag, const wchar_t* value) {
       auto it = std::find(args.begin(), args.end(), flag);
       return it != args.end() && ++it != args.end() && *it == value;
     };
     check(hasPair(L"--render-scale", L"8") && hasPair(L"--window-size", L"1440x816"), "runtime graphics arguments must use remembered values");
+    check(hasPair(L"--renderer", L"d3d12"), "renderer must be forwarded independently");
+    c.opt.renderer = "d3d11";
+    check(rendererOption(c) == "d3d11", "explicit renderer must override config");
+    c.opt.renderer = "invalid";
+    bool invalidRenderer = false;
+    try { gameArguments(c); } catch (const Fatal&) { invalidRenderer = true; }
+    check(invalidRenderer, "invalid renderer must fail explicitly");
+    c.opt.renderer.clear();
     c.opt.windowSize = "480x272";
     check(videoOptions(c) == std::make_pair(string("8"), string("480x272")), "window size must not change internal scale");
     c.opt.renderScale = "1";
@@ -172,6 +182,7 @@ int wmain() {
     check(loaded.get("controls") == "legacy" && loaded.get("prompts") == "modern" && loaded.get("custom") == "preserved",
           "settings must round trip with custom keys");
     check(loaded.get("render_scale") == "8" && loaded.get("window_size") == "1440x816", "graphics preferences must round trip independently");
+    check(loaded.get("renderer") == "d3d12", "renderer preference must round trip");
     HANDLE settings = CreateFileW(c.config.file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                   OPEN_EXISTING, 0, nullptr);
     check(settings != INVALID_HANDLE_VALUE, "cannot lock fixture settings");
@@ -203,6 +214,11 @@ int wmain() {
       graphicsCommand[2] = invalid;
       check(!parse(5, graphicsCommand, parsed), "out-of-range graphics scale must be rejected");
     }
+    wchar_t rendererFlag[] = L"--renderer", rendererValue[] = L"d3d11";
+    wchar_t* rendererCommand[] = {a0, rendererFlag, rendererValue};
+    check(parse(3, rendererCommand, parsed) && parsed.renderer == "d3d11", "renderer argument must parse");
+    rendererCommand[2] = p3;
+    check(!parse(3, rendererCommand, parsed), "unknown renderer must be rejected");
     if (GetEnvironmentVariableW(L"MGSPO_TEST_TOOLCHAIN", nullptr, 0) > 0) {
       setupToolchain();
       check(haveX64Toolchain(), "toolchain setup must select x64");

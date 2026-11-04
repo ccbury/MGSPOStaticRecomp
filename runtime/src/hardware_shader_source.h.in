@@ -1,0 +1,4 @@
+#pragma once
+namespace psp::ge::hardware {
+inline constexpr char kHardwareShader[] = R"MGSPO_SHADER(@MGSPO_HARDWARE_SHADER@)MGSPO_SHADER";
+}
