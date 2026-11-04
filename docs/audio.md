@@ -12,20 +12,49 @@ and resolves them first, including delay-slot calls, without changing generated 
 
 Async file-open completion also returns the opened descriptor rather than a generic zero success
 value, so callers can use the completed result for subsequent reads. This has a synthetic
-open/read/poll/wait/EOF regression; it does not by itself resolve the comic loader issue below.
+open/read/poll/wait/EOF regression.
 
 The measured Software 1x title/movie sequence previously submitted only zero PCM. With corrected
 dispatch, the matching 44.791-second capture has RMS 3309; title playback between 20 and 40 seconds
 is over 99.9% nonzero. These are signal/routing checks, not a listening test or proof of exact
 audio/video synchronization. Codec output was not changed.
 
-Remaining reproduced limitations: an unskipped opening comic stalls around 35 seconds while
-`fdemo_sound_Load` retries reads using descriptor -1. Its preceding file lookup requests
-`oss_bgm_bgm01_01_03.sep`, absent from this image's directory (the voice segment exists).
-The async-open completion fix does not prevent this; the incorrect request/loader state still
-needs investigation rather than substituting another music file or suppressing the error.
-Separately, a prison scene at about 17 flips/s underfeeds the active mixer by about 18% in late
+## Comic prefetch and asynchronous reads
+
+The original comic script deliberately repeats BGM IDs across adjacent segments. Segments 2 and 3
+share ID 211 and a 1,116,160-byte buffer, but only segment 2's BGM filename is present on disc.
+Segments 4 and 5 likewise share ID 212. Segment 3 is supposed to reuse the active segment 2 buffer;
+it is not supposed to open an invented or substituted asset.
+
+A bounded cache trace exposed the failure: the higher-priority prefetch loader completed every
+`sceIoReadAsync` synchronously, including its first poll. It reached segment 3 before the main thread
+could activate segment 2's double-buffered sound bank. ID 211 was still in the inactive slot, so the
+loader allocated again and attempted the absent segment 3 filename, then retried descriptor -1.
+Restoring pending read completion gives the guest's existing poll/backoff or blocking-wait path a
+chance to run the bank activation. The original shared-ID lookup then reuses the buffer.
+
+Read completion now has a fixed 1 ms guest-clock command latency. Host file reads still execute
+synchronously; this is a bounded completion/scheduling approximation, **not** a measured PSP UMD
+seek/throughput model or a background host I/O worker. Polling while pending returns 1 without
+touching the result pointer; blocking waits release the guest CPU token until completion is due.
+Only one unconsumed operation is allowed per descriptor, including completed-but-uncollected results.
+Invalid descriptors and overlapping operations return PSP errors without creating or replacing
+completion records. `sceIoGetAsyncStat(fd, poll, result)` uses its three-argument ABI, and consumed
+results return the correct `0x8002032A` no-async error.
+
+The final Software 1x/two-worker run progressed through changing comic panels and dialogue from
+40 through 85 seconds, beyond the previous roughly 35-second stall, with no file-open failures.
+Local mixed PCM from 35-45 and 55-65 seconds had RMS 4315 and 2369 respectively; this proves output
+is present, not that every voice/music mix, clipping event or A/V synchronization detail is exact.
+Comic windows generally reached about 30 flips/s, falling to 28.2 in the final heavy window.
+The 90.228-second monitored run peaked at 93,986,816 private bytes with at least 17,502,732,288
+physical and 25,120,137,216 commit bytes free. Temporary game-specific tracing was removed;
+no generated stages or game assets are part of the fix.
+
+Remaining reproduced limitations: a prison scene at about 17 flips/s underfeeds the active mixer by about 18% in late
 intervals with no queue-cap drops. Slowdown-related starvation is not fixed by import routing.
+Late heavy comic panels also underfeed the mixer; the cache fix does not eliminate general
+software-renderer slowdown or certify audio against a retail listening/synchronization reference.
 
 ## Local output diagnostics
 
@@ -107,6 +136,11 @@ The audio test also does this check when `MGSPO_AT3_FILE` (an .at3) and `MGSPO_A
 decoder) are set; without them only the synthetic cases run, so no game data is needed or committed.
 
 ## Tests
+
+`mgspo-runtime-tests` exercises pending poll output preservation, scheduler-aware waits with a
+higher-priority reader and lower-priority cache owner, callback waits, the three-argument async-stat
+ABI, descriptor-valued open completion, EOF, duplicate submission, sync access while busy,
+completion consumption, async close, and invalid-descriptor rejection.
 
 `mgspo-audio-tests` covers the ADPCM decoder, envelopes, voice mixing and end flags, the ATRAC RIFF parser,
 ATRAC3+ error handling and the HLE entry points. No game data is used unless the environment variables above

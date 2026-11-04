@@ -20,7 +20,8 @@ static int g_failures = 0;
 
 enum Import : uint32_t {
   CreateSema, PollSema, SignalSema, AllocMem, BlockHead, IoOpen, IoWrite, IoRead, IoClose,
-  IoOpenAsync, IoReadAsync, IoPollAsync, IoWaitAsync, kCount
+  IoOpenAsync, IoReadAsync, IoPollAsync, IoWaitAsync, IoWaitAsyncCB, IoGetAsyncStat, IoCloseAsync,
+  CreateThread, StartThread, WaitThreadEnd, ExitGame, kCount
 };
 
 static const ImportEntry kImports[kCount] = {
@@ -37,6 +38,13 @@ static const ImportEntry kImports[kCount] = {
     {0x08800050, "IoFileMgrForUser", 0xA0B5A7C2},
     {0x08800058, "IoFileMgrForUser", 0x3251EA56},
     {0x08800060, "IoFileMgrForUser", 0xE23EEC33},
+    {0x08800068, "IoFileMgrForUser", 0x35DBD746},
+    {0x08800070, "IoFileMgrForUser", 0xCB05F8D6},
+    {0x08800078, "IoFileMgrForUser", 0xFF5940B6},
+    {0x08800080, "ThreadManForUser", 0x446D8DE6},
+    {0x08800088, "ThreadManForUser", 0xF475845D},
+    {0x08800090, "ThreadManForUser", 0x278C0DF5},
+    {0x08800098, "LoadExecForUser", 0x05572A5F},
 };
 
 static uint32_t call_import(Import i, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0,
@@ -48,6 +56,67 @@ static uint32_t call_import(Import i, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t
 }
 
 static void put_str(uint32_t addr, const char* s) { mem_write(addr, s, std::strlen(s) + 1); }
+
+static constexpr uint32_t asyncPath = 0x08A00100, asyncBuf = 0x08A00200, asyncResult = 0x08A00300;
+static uint32_t asyncFd;
+static bool cacheActivated;
+
+static void asyncReader(Cpu&) {
+  unsigned pending = 0;
+  for (unsigned attempt = 0; attempt < 10; ++attempt) {
+    CHECK(call_import(IoReadAsync, asyncFd, asyncBuf, 5) == 0);
+    CHECK(call_import(IoReadAsync, asyncFd, asyncBuf, 5) == 0x80020329);
+    CHECK(call_import(IoRead, asyncFd, asyncBuf, 5) == 0x80020329);
+    CHECK(call_import(IoClose, asyncFd) == 0x80020329);
+    sw(asyncResult, 0xDEADBEEF);
+    sw(asyncResult + 4, 0x12345678);
+    const uint32_t polled = call_import(IoPollAsync, asyncFd, asyncResult);
+    CHECK(polled <= 1);
+    if (polled == 1) {
+      ++pending;
+      CHECK(lw(asyncResult) == 0xDEADBEEF && lw(asyncResult + 4) == 0x12345678);
+      CHECK(call_import(IoWaitAsync, asyncFd, asyncResult) == 0);
+      CHECK(cacheActivated);  // Waiting for I/O lets the lower-priority owner activate its current bank.
+    }
+    CHECK(lw(asyncResult) == (attempt == 0 ? 5u : 0u) && lw(asyncResult + 4) == 0);
+    CHECK(std::memcmp(ptr(asyncBuf), "hello", 5) == 0);
+    CHECK(call_import(IoPollAsync, asyncFd, asyncResult) == 0x8002032A);
+  }
+  CHECK(pending > 0);  // Tolerate an occasional host scheduling pause, not always-synchronous completion.
+  CHECK(call_import(IoReadAsync, asyncFd, asyncBuf, 5) == 0);
+  CHECK(call_import(IoWaitAsyncCB, asyncFd, asyncResult) == 0);
+  CHECK(lw(asyncResult) == 0 && lw(asyncResult + 4) == 0);
+}
+
+static void asyncDriver(Cpu&) {
+  asyncFd = call_import(IoOpenAsync, asyncPath, 1, 0);
+  CHECK(static_cast<int32_t>(asyncFd) > 0);
+  CHECK(call_import(IoGetAsyncStat, asyncFd, 0, asyncResult) == 0);
+  CHECK(lw(asyncResult) == asyncFd && lw(asyncResult + 4) == 0);
+  put_str(0x08A00400, "async-reader");
+  const uint32_t reader = call_import(CreateThread, 0x08A00400, 0x08805000, 0x10, 0x4000);
+  CHECK(static_cast<int32_t>(reader) > 0);
+  CHECK(call_import(StartThread, reader) == 0);
+  cacheActivated = true;
+  CHECK(call_import(WaitThreadEnd, reader) == 0);
+  CHECK(call_import(IoReadAsync, asyncFd, asyncBuf, 5) == 0);
+  sw(asyncResult, 0xAABBCCDD);
+  const uint32_t polled = call_import(IoGetAsyncStat, asyncFd, 1, asyncResult);
+  CHECK(polled <= 1);
+  if (polled == 1) {
+    CHECK(lw(asyncResult) == 0xAABBCCDD);
+    CHECK(call_import(IoGetAsyncStat, asyncFd, 0, asyncResult) == 0);
+  }
+  CHECK(lw(asyncResult) == 0);
+  CHECK(call_import(IoCloseAsync, asyncFd) == 0);
+  CHECK(call_import(IoWaitAsync, asyncFd, asyncResult) == 0);
+  CHECK(lw(asyncResult) == 0 && lw(asyncResult + 4) == 0);
+  CHECK(call_import(IoReadAsync, asyncFd, asyncBuf, 5) == 0x80010009);
+  CHECK(call_import(IoPollAsync, asyncFd, asyncResult) == 0x80010009);
+  CHECK(call_import(IoReadAsync, UINT32_MAX, asyncBuf, 5) == 0x80010009);
+  CHECK(call_import(IoPollAsync, UINT32_MAX, asyncResult) == 0x80010009);
+  call_import(ExitGame);
+}
 
 static void placeholder(Cpu& c) { c.r[2] = 0xBAD; }
 static void linked_export(Cpu& c) { c.r[2] = c.r[4] + 7; }
@@ -131,27 +200,16 @@ int main() {
   CHECK(std::memcmp(ptr(buf), "hello", 5) == 0);
   call_import(IoClose, fd);
 
-  // Async open completion returns the descriptor, not a generic zero success value.
-  const uint32_t result = scratch + 0x300;
-  fd = call_import(IoOpenAsync, path, 1, 0);
-  CHECK(static_cast<int32_t>(fd) > 0);
-  CHECK(call_import(IoWaitAsync, fd, result) == 0);
-  CHECK(lw(result) == fd && lw(result + 4) == 0);
-  const uint32_t completedFd = lw(result);
-  CHECK(call_import(IoReadAsync, completedFd, buf, 5) == 0);
-  CHECK(call_import(IoPollAsync, completedFd, result) == 0);
-  CHECK(lw(result) == 5 && lw(result + 4) == 0);
-  CHECK(std::memcmp(ptr(buf), "hello", 5) == 0);
-  CHECK(call_import(IoReadAsync, completedFd, buf, 5) == 0);
-  CHECK(call_import(IoWaitAsync, completedFd, result) == 0);
-  CHECK(lw(result) == 0 && lw(result + 4) == 0);  // EOF is a successful zero-byte completion
-  call_import(IoClose, completedFd);
-
   // the disc is read only and does not allow escaping its folder
   put_str(path, "disc0:/new.bin");
   CHECK(static_cast<int32_t>(call_import(IoOpen, path, 0x0602, 0777)) < 0);
   put_str(path, "disc0:/../secret");
   CHECK(static_cast<int32_t>(call_import(IoOpen, path, 1, 0)) < 0);
+
+  put_str(asyncPath, "ms0:/SAVEDATA/test.bin");
+  const FuncEntry asyncFunctions[] = {{0x08804000, asyncDriver}, {0x08805000, asyncReader}};
+  bind_tables(asyncFunctions, 2, kImports, kCount);
+  CHECK(kernel_run_main(0x08804000) == 0);
 
   fs::remove_all(tmp);
   if (g_failures == 0) std::printf("runtime tests passed\n");
