@@ -94,6 +94,7 @@ add_library(mgspo_rt STATIC
   runtime/src/gpu.cpp
   runtime/src/gpu_draw.cpp
   runtime/src/raster_fast.cpp
+  runtime/src/render_surface.cpp
   runtime/src/audio.cpp
   runtime/src/sas_core.cpp
   runtime/src/sas.cpp

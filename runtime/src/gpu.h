@@ -1,8 +1,7 @@
 // Software implementation of the PSP Graphics Engine command interpreter.
 //
-// The GE state machine and rasteriser write straight into emulated VRAM in the pixel format the game
-// picked, so 16/32 bit framebuffers, render-to-texture and copy transfers behave like the hardware
-// without any extra bookkeeping. The host presenter then only has to put the display buffer on screen.
+// The native pass always writes guest memory in the format/stride the game picked. Optional host
+// colour/depth shadows replay geometry at 2x through 8x without changing native readbacks or feedback.
 #pragma once
 #include <cstdint>
 #include <cstdio>

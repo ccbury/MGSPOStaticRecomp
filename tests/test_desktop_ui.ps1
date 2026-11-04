@@ -72,10 +72,19 @@ try {
   $originalIcons = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
   if ($originalIcons.ToInt32() -ne 0) { throw 'Original PSP icons must be the default.' }
   [void][DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x14E, [IntPtr]1, [IntPtr]::Zero)
+  $scale = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 115), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+  $size = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 116), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+  if ($scale.ToInt32() -ne 0 -or $size.ToInt32() -ne 1) { throw 'Graphics defaults changed.' }
+  $count = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 115), 0x146, [IntPtr]::Zero, [IntPtr]::Zero)
+  if ($count.ToInt32() -ne 8) { throw 'All eight render scales must be offered.' }
+  [void][DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 115), 0x14E, [IntPtr]7, [IntPtr]::Zero)
+  [void][DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 116), 0x14E, [IntPtr]2, [IntPtr]::Zero)
   Click 104
   Wait-Status 'Settings saved'
   if ((Get-Content -LiteralPath $config -Raw) -notmatch 'controls=legacy') { throw 'Profile was not persisted.' }
   if ((Get-Content -LiteralPath $config -Raw) -notmatch 'prompts=modern') { throw 'Icon mode was not persisted.' }
+  if ((Get-Content -LiteralPath $config -Raw) -notmatch 'render_scale=8') { throw 'Render scale was not persisted.' }
+  if ((Get-Content -LiteralPath $config -Raw) -notmatch 'window_size=1440x816') { throw 'Window size was not persisted.' }
   Click 107
   Wait-Status 'Error:.*standalone Git clone'
   if ([DesktopUi]::IsWindowEnabled([DesktopUi]::GetDlgItem($window, 108))) { throw 'Update should not be enabled after failed check.' }
@@ -97,6 +106,9 @@ try {
   if ($profile.ToInt32() -ne 1) { throw 'Remembered profile did not reload.' }
   $icons = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
   if ($icons.ToInt32() -ne 1) { throw 'Remembered icons did not reload.' }
+  $scale = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 115), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+  $size = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 116), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+  if ($scale.ToInt32() -ne 7 -or $size.ToInt32() -ne 2) { throw 'Remembered graphics settings did not reload.' }
   Close-Ui
   $updateTests = Join-Path (Split-Path $exe) 'mgspo-launcher-update-tests.exe'
   if (Test-Path -LiteralPath $updateTests) {
@@ -116,6 +128,9 @@ try {
     if ($window -eq [IntPtr]::Zero) { throw 'Activated UI window not ready.' }
     $icons = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 114), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
     if ($icons.ToInt32() -ne 1) { throw 'Activated UI lost icon preference.' }
+    $scale = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 115), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+    $size = [DesktopUi]::SendMessage([DesktopUi]::GetDlgItem($window, 116), 0x147, [IntPtr]::Zero, [IntPtr]::Zero)
+    if ($scale.ToInt32() -ne 7 -or $size.ToInt32() -ne 2) { throw 'Activated UI lost graphics settings.' }
     Close-Ui
     Remove-Item -LiteralPath $staged -Force
     Start-Ui

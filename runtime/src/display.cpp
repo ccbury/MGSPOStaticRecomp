@@ -9,6 +9,7 @@
 
 #include "kernel_internal.h"
 #include "platform.h"
+#include "render_surface.h"
 
 namespace psp {
 namespace k {
@@ -29,6 +30,7 @@ uint64_t g_nextVblank = 0;
 uint64_t g_lastPresented = UINT64_MAX;
 std::vector<uint32_t> g_bgra;
 std::string g_dumpPath;
+std::string g_nativeDumpPath;
 uint32_t g_autoButtons = 0;
 
 uint32_t crc32_update(uint32_t crc, const uint8_t* p, size_t n) {
@@ -84,10 +86,11 @@ void write_png(const std::string& path, const uint32_t* argb, int w, int h) {
   png_chunk(out, "IHDR", ihdr);
   png_chunk(out, "IDAT", z);
   png_chunk(out, "IEND", {});
-  if (FILE* f = std::fopen(path.c_str(), "wb")) {
-    std::fwrite(out.data(), 1, out.size(), f);
-    std::fclose(f);
-  }
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) throw std::runtime_error("Cannot open frame dump: " + path);
+  const bool complete = std::fwrite(out.data(), 1, out.size(), f) == out.size();
+  const int closed = std::fclose(f);
+  if (!complete || closed != 0) throw std::runtime_error("Cannot finish frame dump: " + path);
 }
 
 void present_frame_impl();
@@ -130,21 +133,16 @@ void present_frame() {
   }
 }
 
-void present_frame_impl() {
-  if (!g_fb.addr || g_fb.stride < 480) return;
-  if ((g_fb.addr & 0x0F000000) == 0 && g_fb.addr < kVramSize) g_fb.addr += kVramBase;
-  const int w = 480, h = 272;
-  uint32_t bpp = g_fb.format == 3 ? 4 : 2;
-  uint32_t last = g_fb.addr + (g_fb.stride * (h - 1) + w) * bpp - 1;
-  ptr(g_fb.addr);
-  ptr(last);
-  g_bgra.resize(w * h);
+void decode_display(const uint8_t* src, uint32_t stride, uint32_t format, int w, int h,
+                    std::vector<uint32_t>& out) {
+  const uint32_t bpp = format == 3 ? 4 : 2;
+  out.resize(size_t(w) * h);
   for (int y = 0; y < h; ++y) {
-    const uint8_t* row = ptr(g_fb.addr + y * g_fb.stride * bpp);
-    uint32_t* dst = &g_bgra[y * w];
+    const uint8_t* row = src + size_t(y) * stride * bpp;
+    uint32_t* dst = &out[size_t(y) * w];
     for (int x = 0; x < w; ++x) {
       uint32_t r, g, b;
-      if (g_fb.format == 3) {
+      if (format == 3) {
         uint32_t px;
         std::memcpy(&px, row + x * 4, 4);
         r = px & 0xFF;
@@ -153,11 +151,11 @@ void present_frame_impl() {
       } else {
         uint16_t px;
         std::memcpy(&px, row + x * 2, 2);
-        if (g_fb.format == 0) {
+        if (format == 0) {
           r = (px & 31) * 255 / 31;
           g = ((px >> 5) & 63) * 255 / 63;
           b = ((px >> 11) & 31) * 255 / 31;
-        } else if (g_fb.format == 1) {
+        } else if (format == 1) {
           r = (px & 31) * 255 / 31;
           g = ((px >> 5) & 31) * 255 / 31;
           b = ((px >> 10) & 31) * 255 / 31;
@@ -170,7 +168,26 @@ void present_frame_impl() {
       dst[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
     }
   }
+}
+
+void present_frame_impl() {
+  ge::surface::NativeScope nativeScope;
+  if (!g_fb.addr || g_fb.stride < 480) return;
+  if ((g_fb.addr & 0x0F000000) == 0 && g_fb.addr < kVramSize) g_fb.addr += kVramBase;
+  auto surface = ge::surface::display(g_fb.addr, g_fb.stride, g_fb.format);
+  const int scale = surface ? surface->scale : 1;
+  const int w = 480 * scale, h = 272 * scale;
+  uint32_t bpp = g_fb.format == 3 ? 4 : 2;
+  uint32_t last = g_fb.addr + (g_fb.stride * (272 - 1) + 480) * bpp - 1;
+  const uint8_t* native = ptr(g_fb.addr);
+  ptr(last);
+  decode_display(surface ? surface->pixels.data() : native, g_fb.stride * scale, g_fb.format, w, h, g_bgra);
   plat::present(g_bgra.data(), w, h);
+  if (!g_nativeDumpPath.empty() && g_vcount % 30 == 0) {
+    std::vector<uint32_t> bgra;
+    decode_display(native, g_fb.stride, g_fb.format, 480, 272, bgra);
+    write_png(g_nativeDumpPath, bgra.data(), 480, 272);
+  }
   static uint64_t s_numbered = 0;
   if (!g_dumpPath.empty()) {
     if (g_vcount % 30 == 0) write_png(g_dumpPath, g_bgra.data(), w, h);
@@ -203,6 +220,7 @@ void h_set_mode(Cpu& c) { ret(c, 0); }
 }  // namespace
 
 void display_set_dump_path(const std::string& p) { g_dumpPath = p; }
+void display_set_native_dump_path(const std::string& p) { g_nativeDumpPath = p; }
 void display_set_profile(bool on) { profile().enabled = on; }
 ProfileCounters& profile() {
   static ProfileCounters p;

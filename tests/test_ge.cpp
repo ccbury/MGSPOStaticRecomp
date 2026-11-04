@@ -9,6 +9,8 @@
 
 #include "gpu.h"
 #include "raster_fast.h"
+#include "render_surface.h"
+#include <psp/video_settings.h>
 
 using namespace psp;
 
@@ -642,6 +644,282 @@ static void test_fast_matches_reference() {
   CHECK(bad == 0);
 }
 
+static uint32_t host_pixel(const std::shared_ptr<ge::surface::Plane>& p, int x, int y) {
+  uint32_t pixel = 0;
+  if (p) std::memcpy(&pixel, p->pixels.data() + (size_t(y) * p->stride * p->scale + x) * p->bpp, p->bpp);
+  return pixel;
+}
+
+static void tiny_triangle(ge::Gpu& g, bool depth = false) {
+  put_verts(kVerts, {{0xFFFFFFFF, 10, 10, 100}, {0xFFFFFFFF, 10.75f, 10, 100},
+                    {0xFFFFFFFF, 10, 10.75f, 100}});
+  Builder b;
+  b.setup();
+  if (depth)
+    b.add(cmd(0x9E, 0x100000)).add(cmd(0x9F, 0x040000 | 512)).add(cmd(0x23, 1))
+     .add(cmd(0xDE, 1)).add(cmd(0xE7, 0));
+  b.vertex(kVerts, kThroughCol).prim(3, 3).finish();
+  exec(g, b);
+}
+
+static void test_internal_resolution() {
+  namespace s = ge::surface;
+  ge::fast::set_stats_sink(nullptr, nullptr);
+  for (auto mode : {ge::fast::Mode::Fast, ge::fast::Mode::Reference}) {
+    ge::fast::set_mode(mode);
+    s::set_scale(2);
+    clear_vram();
+    std::memset(ptr(kVram + 0x100000), 0xFF, 512 * 272 * 2);
+    ge::Gpu g;
+    tiny_triangle(g, true);
+    auto colour = s::display(kVram, 512, 3);
+    CHECK(colour && host_pixel(colour, 20, 20) == 0xFFFFFFFF);
+    CHECK(host_pixel(colour, 21, 20) == 0);
+    CHECK(host_pixel(colour, 20, 21) == 0);
+    {
+      s::NativeScope read;
+      CHECK(px32(10, 10) == 0);  // the finer sample exists even though the entire native pixel is empty
+    }
+    // Independent high-resolution depth must occlude a farther primitive at that subpixel only.
+    put_verts(kVerts, {{0xFF0000FF, 9, 9, 200}, {0xFF0000FF, 12, 12, 200}});
+    Builder b;
+    b.setup().add(cmd(0x9E, 0x100000)).add(cmd(0x9F, 0x040000 | 512)).add(cmd(0x23, 1))
+     .add(cmd(0xDE, 4)).add(cmd(0xE7, 0));
+    b.vertex(kVerts, kThroughCol).prim(6, 2).finish();
+    exec(g, b);
+    colour = s::display(kVram, 512, 3);
+    CHECK(host_pixel(colour, 20, 20) == 0xFFFFFFFF);
+    CHECK(host_pixel(colour, 21, 20) == 0xFF0000FF);
+    {
+      s::NativeScope read;
+      CHECK(px32(10, 10) == 0xFF0000FF);
+    }
+    // A CPU readback is conservative: native authority is never replaced by a downsample.
+    CHECK(px32(10, 10) == 0xFF0000FF);
+    colour = s::display(kVram, 512, 3);
+    CHECK(host_pixel(colour, 20, 20) == 0xFF0000FF);
+    // A same-value CPU store through an uncached alias must also invalidate the old host detail.
+    s::reset();
+    clear_vram();
+    tiny_triangle(g);
+    sw(kVram | 0x40000000, 0);
+    colour = s::display(kVram, 512, 3);
+    CHECK(host_pixel(colour, 20, 20) == 0);
+    // Copying identical native bytes must still destroy old host samples at the destination.
+    s::reset();
+    clear_vram();
+    tiny_triangle(g);
+    sw(kTex, 0);
+    Builder copy;
+    copy.add(cmd(0xB2, kTex & 0xFFFFFF)).add(cmd(0xB3, 0x080000 | 1))
+        .add(cmd(0xB4, 0)).add(cmd(0xB5, 0x040000 | 512))
+        .add(cmd(0xEB, 0)).add(cmd(0xEC, (10 << 10) | 10)).add(cmd(0xEE, 0))
+        .add(cmd(0xEA, 1)).finish();
+    exec(g, copy);
+    colour = s::display(kVram, 512, 3);
+    CHECK(host_pixel(colour, 20, 20) == 0);
+    // Changed movie/HLE pixels via a retained pointer are detected even without a fresh ptr() call.
+    uint8_t* retained;
+    { s::NativeScope read; retained = ptr(kVram); }
+    uint32_t moviePixel = 0xFF2468AC;
+    std::memcpy(retained + (10 * 512 + 10) * 4, &moviePixel, 4);
+    colour = s::display(kVram, 512, 3);
+    CHECK(host_pixel(colour, 20, 20) == moviePixel && host_pixel(colour, 21, 21) == moviePixel);
+    s::reset();
+    clear_vram();
+    tiny_triangle(g);
+    struct TV { float u, v; uint32_t colour; float x, y, z; };
+    TV tv[2] = {{0, 0, 0xFFFFFFFF, 0, 0, 0}, {16, 16, 0xFFFFFFFF, 16, 16, 0}};
+    std::memcpy(ptr(kVerts), tv, sizeof tv);
+    Builder feedback;
+    feedback.setup().add(cmd(0x9C, 0x88000)).add(cmd(0x1E, 1))
+            .add(cmd(0xA0, 0)).add(cmd(0xA8, 0x040000 | 512)).add(cmd(0xB8, 4 | (4 << 8)))
+            .add(cmd(0xC3, 3)).add(cmd(0xC9, 3 | (1 << 8)))
+            .vertex(kVerts, kThroughCol | 3).prim(6, 2).finish();
+    exec(g, feedback);
+    auto other = s::display(kVram + 0x88000, 512, 3);
+    CHECK(other && host_pixel(other, 20, 20) == 0);  // native texture feedback, not the white host-only subpixel
+    {
+      s::NativeScope read;
+      CHECK(lw(kVram + 0x88000 + (10 * 512 + 10) * 4) == 0);
+    }
+    // Same-target feedback cannot replay safely after the native draw; it explicitly reseeds.
+    feedback.w.clear();
+    feedback.setup().add(cmd(0x1E, 1)).add(cmd(0xA0, 0)).add(cmd(0xA8, 0x040000 | 512))
+            .add(cmd(0xB8, 4 | (4 << 8))).add(cmd(0xC3, 3)).add(cmd(0xC9, 3 | (1 << 8)))
+            .vertex(kVerts, kThroughCol | 3).prim(6, 2).finish();
+    exec(g, feedback);
+    colour = s::display(kVram, 512, 3);
+    CHECK(host_pixel(colour, 20, 20) == 0);
+    s::reset();
+    clear_vram();
+    tiny_triangle(g);
+    TV subBlock[2] = {{0, 0, 0xFFFFFFFF, 0, 0, 0}, {1, 1, 0xFFFFFFFF, 1, 1, 0}};
+    std::memcpy(ptr(kVerts), subBlock, sizeof subBlock);
+    Builder dxtFeedback;
+    dxtFeedback.setup().add(cmd(0x1E, 1)).add(cmd(0xA0, 0)).add(cmd(0xA8, 0x040000 | 1))
+               .add(cmd(0xB8, 0)).add(cmd(0xC3, 8)).add(cmd(0xC9, 3 | (1 << 8)))
+               .vertex(kVerts, kThroughCol | 3).prim(6, 2).finish();
+    exec(g, dxtFeedback);
+    colour = s::display(kVram, 512, 3);
+    CHECK(host_pixel(colour, 20, 20) == 0);  // 1x1 DXT still reads a whole block: self-feedback fallback
+    for (int format : {0, 1, 2}) {
+      s::reset();
+      clear_vram();
+      put_verts(kVerts, {{0xFFFFFFFF, 10, 10, 0}, {0xFFFFFFFF, 10.75f, 10, 0},
+                        {0xFFFFFFFF, 10, 10.75f, 0}});
+      Builder packed;
+      packed.setup(format).add(cmd(0x1E, 0)).add(cmd(0x23, 0))
+            .vertex(kVerts, kThroughCol).prim(3, 3).finish();
+      exec(g, packed);
+      auto packedColour = s::display(kVram, 512, format);
+      CHECK(packedColour && host_pixel(packedColour, 20, 20) == 0xFFFF);
+      CHECK(host_pixel(packedColour, 21, 20) == 0);
+      {
+        s::NativeScope read;
+        CHECK(px16(10, 10) == 0);
+      }
+      // A different packed-format view invalidates old detail even when native pixels stay zero.
+      tiny_triangle(g);
+      packedColour = s::display(kVram, 512, format);
+      CHECK(host_pixel(packedColour, 20, 20) == 0);
+    }
+  }
+  // The host pass may not change ANY guest colour/depth bytes, in either raster mode.
+  for (auto mode : {ge::fast::Mode::Fast, ge::fast::Mode::Reference}) {
+    ge::fast::set_mode(mode);
+    write_tex_8888(kTex, 16, 16);
+    for (int variant : {0, 1, 2, 4, 7, 15, 16, 31, 64, 127}) {
+      std::vector<uint8_t> output[2];
+      for (int scale = 1; scale <= 2; ++scale) {
+        s::set_scale(scale);
+        clear_vram();
+        ge::Gpu g;
+        render_scene(g, variant, 5678 + variant);
+        s::NativeScope read;
+        output[scale - 1].assign(ptr(kVram), ptr(kVram) + kVramSize);
+      }
+      CHECK(output[0] == output[1]);
+    }
+  }
+  s::set_scale(2);
+  CHECK(!s::acquire(kVram, 0, 3, 272));
+  CHECK(!s::acquire(kVram, UINT32_MAX, 3, 272));
+  CHECK(!s::acquire(kVram, 512, 3, INT32_MAX));
+  CHECK(!s::acquire(kRamBase, 512, 3, 272));
+  CHECK(!s::acquire(kVram + kVramSize - 1, 512, 3, 272));
+  CHECK(!s::overlaps(kVram + 1, 0, kVram, 1024));
+  for (int i = 0; i < 16; ++i) {
+    auto p = s::acquire(kVram + i * 64, 512, 3, 272);
+    CHECK(p != nullptr);
+  }
+  CHECK(s::allocated_bytes() <= s::budget_bytes());
+  bool invalid = false;
+  try { s::set_scale(9); } catch (const std::invalid_argument&) { invalid = true; }
+  CHECK(invalid && s::scale() == 2);
+  s::set_scale(1);
+  CHECK(s::allocated_bytes() == 0 && !s::display(kVram, 512, 3));
+  ge::fast::set_mode(ge::fast::Mode::Fast);
+}
+
+static void test_video_settings() {
+  for (int scale = 1; scale <= 8; ++scale) CHECK(video::render_scale(std::to_string(scale)) == scale);
+  CHECK(video::window_size("1920x1088").width == 1920);
+  auto fitted = video::fit({1000, 1000}, {960, 544});
+  CHECK(fitted.width == 1000 && fitted.height == 566);
+  fitted = video::fit({1000, 500}, {480, 272});
+  CHECK(fitted.width == 882 && fitted.height == 500);
+  CHECK(video::fit({0, 0}, {480, 272}).width == 0);
+  CHECK(video::fit({1000, 1000}, {3840, 2176}).height == 566);
+  for (const char* value : {"0", "-1", "9", "2x", "08", "999999999999"}) {
+    bool invalid = false;
+    try { video::render_scale(value); } catch (const std::invalid_argument&) { invalid = true; }
+    CHECK(invalid);
+  }
+  for (const char* value : {"0x0", "-1x272", "960x544junk", "999999999999x99999999"}) {
+    bool invalid = false;
+    try { video::window_size(value); } catch (const std::invalid_argument&) { invalid = true; }
+    CHECK(invalid);
+  }
+}
+
+static void test_all_resolution_scales() {
+  namespace s = ge::surface;
+  for (auto mode : {ge::fast::Mode::Fast, ge::fast::Mode::Reference}) {
+    ge::fast::set_mode(mode);
+    std::vector<uint8_t> nativeColour[4], nativeDepth[4];
+    for (int scale = 1; scale <= 8; ++scale) {
+      for (int format = 0; format <= 3; ++format) {
+        s::set_scale(scale);
+        clear_vram();
+        std::memset(ptr(kVram + 0x100000), 0xFF, 16 * 16 * 2);
+        ge::Gpu g;
+        auto setup = [&](Builder& b) -> Builder& {
+          return b.setup(format).add(cmd(0x9D, 0x040000 | 16)).add(cmd(0xD5, (15 << 10) | 15))
+                  .add(cmd(0x9E, 0x100000)).add(cmd(0x9F, 0x040000 | 16))
+                  .add(cmd(0x23, 1)).add(cmd(0xDE, 4)).add(cmd(0xE7, 0));
+        };
+        put_verts(kVerts, {{0xFFFFFFFF, 2, 2, 100}, {0xFFFFFFFF, 2.75f, 2, 100},
+                          {0xFFFFFFFF, 2, 2.75f, 100}});
+        Builder tiny;
+        setup(tiny).vertex(kVerts, kThroughCol).prim(3, 3).finish();
+        exec(g, tiny);
+        {
+          s::NativeScope read;
+          CHECK(lw(kVram + (2 * 16 + 2) * (format == 3 ? 4 : 2)) == 0);
+        }
+        auto colour = s::acquire(kVram, 16, format, 16);
+        if (scale == 1) {
+          CHECK(!colour && s::allocated_bytes() == 0);
+          put_verts(kVerts, {{0xFF0000FF, 1, 1, 200}, {0xFF0000FF, 4, 4, 200}});
+          Builder farther;
+          setup(farther).vertex(kVerts, kThroughCol).prim(6, 2).finish();
+          exec(g, farther);
+          nativeColour[format].assign(ptr(kVram), ptr(kVram) + 16 * 16 * (format == 3 ? 4 : 2));
+          nativeDepth[format].assign(ptr(kVram + 0x100000), ptr(kVram + 0x100000) + 16 * 16 * 2);
+          continue;
+        }
+        const uint32_t white = format == 3 ? UINT32_MAX : 0xFFFF;
+        CHECK(colour && colour->scale == scale);
+        CHECK(host_pixel(colour, 2 * scale, 2 * scale) == white);
+        CHECK(host_pixel(colour, 3 * scale - 1, 3 * scale - 1) == 0);
+        auto depth = s::acquire(kVram + 0x100000, 16, -1, 16);
+        CHECK(host_pixel(depth, 2 * scale, 2 * scale) == 100);
+        put_verts(kVerts, {{0xFF0000FF, 1, 1, 200}, {0xFF0000FF, 4, 4, 200}});
+        Builder farther;
+        setup(farther).vertex(kVerts, kThroughCol).prim(6, 2).finish();
+        exec(g, farther);
+        CHECK(host_pixel(colour, 2 * scale, 2 * scale) == white);
+        CHECK(host_pixel(colour, 3 * scale - 1, 3 * scale - 1) != white);
+        CHECK(host_pixel(depth, 2 * scale, 2 * scale) == 100);
+        {
+          s::NativeScope read;
+          CHECK(std::memcmp(ptr(kVram), nativeColour[format].data(), nativeColour[format].size()) == 0);
+          CHECK(std::memcmp(ptr(kVram + 0x100000), nativeDepth[format].data(), nativeDepth[format].size()) == 0);
+        }
+        // Same-value native writes still invalidate high-frequency detail at every scale/format.
+        sw(kVram | 0x40000000, 0);
+        colour->refresh();
+        CHECK(host_pixel(colour, 2 * scale, 2 * scale) != white);
+        CHECK(s::allocated_bytes() <= s::budget_bytes());
+        CHECK(s::budget_bytes() <= (128u << 20));
+      }
+      if (scale > 1) {
+        s::reset();
+        std::vector<std::shared_ptr<s::Plane>> pinned;
+        for (int i = 0; i < 8; ++i) pinned.push_back(s::acquire(kVram + i * 1024, 16, 3, 16));
+        bool exhausted = false;
+        try { s::acquire(kVram + 8192, 16, 3, 16); } catch (const std::runtime_error&) { exhausted = true; }
+        CHECK(exhausted);
+        pinned.clear();
+        CHECK(s::acquire(kVram + 8192, 16, 3, 16) != nullptr);
+      }
+    }
+  }
+  s::set_scale(1);
+  ge::fast::set_mode(ge::fast::Mode::Fast);
+}
+
 int main() {
   init_memory();
   test_clear_and_sprite();
@@ -665,6 +943,23 @@ int main() {
   test_indexed_strip();
   test_syscalls();
   test_fast_matches_reference();
+  test_internal_resolution();
+  test_all_resolution_scales();
+  test_video_settings();
+  ge::surface::set_scale(2);
+  test_clear_and_sprite();
+  test_565();
+  test_depth();
+  test_blend();
+  test_alpha_test();
+  test_stencil();
+  test_texture_8888();
+  test_texture_clut4_swizzled();
+  test_texture_dxt1();
+  test_transform_and_cull();
+  test_transfer();
+  test_bezier();
+  ge::surface::set_scale(1);
   if (g_failures == 0) std::printf("ge tests passed\n");
   return g_failures ? 1 : 0;
 }

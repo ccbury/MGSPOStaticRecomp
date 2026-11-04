@@ -2,9 +2,13 @@
 #include <algorithm>
 
 #include "platform.h"
+#include <psp/video_settings.h>
 
 namespace psp {
 namespace plat {
+void set_window_size(int width, int height) {
+  video::window_size(std::to_string(width) + "x" + std::to_string(height));
+}
 
 void init(bool) {}
 void present(const uint32_t*, int, int) {}

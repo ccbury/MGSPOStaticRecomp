@@ -78,6 +78,55 @@ long-first-build messaging as the CLI. Install Visual Studio 2022 / Build Tools 
 **Desktop development with C++**, including CMake and Ninja; missing-tool errors explain what to install.
 The UI does not install dependencies.
 
+**Render scale** and **Window** are independent settings, applied on the next game launch:
+1x renders at the native **480x272** (the default). Every integer scale from **2x through 8x** is
+available: 960x544, 1440x816, 1920x1088, 2400x1360, 2880x1632, 3360x1904 and **3840x2176**.
+Triangles, sprites and patches use the selected finer sample grid with separate host colour/depth buffers.
+Window presets choose an initial
+client size of 480x272, 960x544 (default), 1440x816 or 1920x1088. You can still resize the game window;
+the presenter preserves aspect ratio with black letterboxing. A larger window alone does not increase
+internal detail, and neither setting changes guest timing or input coordinates. Save settings to keep
+them across launcher restarts and source updates; existing control/icon preferences are preserved.
+
+The higher-resolution software mode is deliberately **native-authoritative**: it retains the exact native rendering
+pass for guest CPU reads, transfers and texture feedback, then replays supported geometry into host
+shadows. It does not downsample host pixels over guest VRAM. Work grows approximately with the square
+of the scale: 2x has four times the coverage samples, 8x has 64 times, **plus the native pass**.
+Extra synchronization and host storage also cost time. At most eight planes are cached; the byte
+budget is the larger of 64 MiB and three 512x272 RGBA planes including native snapshots at the
+selected scale (about 104 MiB at 8x). A typical 8x colour/depth pair uses about 52 MiB, before a second
+colour target, presentation/conversion buffers and optional frame dumps. Unpinned targets are evicted;
+if a required allocation cannot fit while targets are pinned, the game stops with an explicit
+lower-scale error instead of silently claiming native pixels are high-resolution rendering.
+Allocation failures also stop the run. Expect severe frame-time costs at high scales on this software
+renderer; 1x remains available without the extra pass or surface allocations.
+
+There are explicit correctness fallbacks, reported once per kind in the game log:
+CPU/HLE VRAM pointer access (including readback) conservatively reseeds host buffers from native pixels;
+retained-pointer pixel changes are detected too. Transfers and aliased format/stride views also reseed.
+Runtime code retaining a raw writable VRAM pointer across GE execution must explicitly notify the
+surface manager after writing, even for same-value stores; byte comparison cannot observe those stores.
+Render-target textures sample their **native** source, so offscreen/feedback effects do not gain source
+detail; same-target texture feedback and overlapping colour/depth targets use the native draw result.
+Host targets are limited to valid VRAM ranges with stride/height at most 1024; RAM targets and surfaces
+not matching the displayed address/stride/format present natively. Evicted surfaces are reseeded.
+Lines and points preserve native-grid coverage expanded into host pixels. These paths are not claimed
+as finer-detail rendering. Existing PSP textures, interface artwork and movies cannot acquire new source
+detail; higher scales improve supported geometry edges/interpolation, not the source assets. Local frame dumps use
+the actual displayed surface dimensions, including 480x272 when a whole-frame native fallback applies.
+
+CLI equivalents (also accepted by the desktop launcher):
+
+```powershell
+mgspo-launcher run --render-scale 2 --window-size 1440x816
+# Direct runtime: mgspo-game <boot.elf> ... --render-scale 2 --window-size 1440x816
+```
+
+Only the listed values are accepted; invalid/extreme sizes fail with an actionable error. These are
+runtime settings, not stage-generation settings, so changing them does not require rebuilding stages.
+For local comparison, `--dump-frame <png> --dump-native-frame <other.png>` captures the displayed
+surface and authoritative native pixels at the same cadence without changing guest readback behaviour.
+
 The **Icons** selector defaults to **Original PSP**. **Modern Xbox-style (menu X/Y)** currently
 replaces positively identified title/pause menu Triangle and Square prompts with original-authored
 Y and X artwork. Other symbols remain original; this is not yet a full-game Xbox prompt set.

@@ -138,6 +138,26 @@ int wmain() {
     try { gameArguments(c); } catch (const Fatal&) { invalidPrompts = true; }
     check(invalidPrompts, "invalid icons must fail explicitly");
     c.opt.prompts.clear();
+    check(videoOptions(c) == std::make_pair(string("1"), string("960x544")), "old config must use native scale and existing window size");
+    const string graphicsStamp = buildStamp(c);
+    c.config.set("render_scale", "8");
+    c.config.set("window_size", "1440x816");
+    args = gameArguments(c);
+    auto hasPair = [&](const wchar_t* flag, const wchar_t* value) {
+      auto it = std::find(args.begin(), args.end(), flag);
+      return it != args.end() && ++it != args.end() && *it == value;
+    };
+    check(hasPair(L"--render-scale", L"8") && hasPair(L"--window-size", L"1440x816"), "runtime graphics arguments must use remembered values");
+    c.opt.windowSize = "480x272";
+    check(videoOptions(c) == std::make_pair(string("8"), string("480x272")), "window size must not change internal scale");
+    c.opt.renderScale = "1";
+    check(videoOptions(c) == std::make_pair(string("1"), string("480x272")), "explicit scale must not change window size");
+    check(buildStamp(c) == graphicsStamp, "graphics settings must not require regenerating or compiling stages");
+    c.opt.renderScale = "999999999999";
+    bool invalidVideo = false;
+    try { gameArguments(c); } catch (const Fatal&) { invalidVideo = true; }
+    check(invalidVideo, "extreme render scale must fail explicitly");
+    c.opt.renderScale.clear(); c.opt.windowSize.clear();
     c.opt.gameArgs = {L"--controls", L"legacy"};
     check(gameArguments(c).back() == L"legacy", "raw game arguments must remain compatible");
     c.opt.controls = "invalid";
@@ -151,6 +171,7 @@ int wmain() {
     loaded.load(c.config.file);
     check(loaded.get("controls") == "legacy" && loaded.get("prompts") == "modern" && loaded.get("custom") == "preserved",
           "settings must round trip with custom keys");
+    check(loaded.get("render_scale") == "8" && loaded.get("window_size") == "1440x816", "graphics preferences must round trip independently");
     HANDLE settings = CreateFileW(c.config.file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                                   OPEN_EXISTING, 0, nullptr);
     check(settings != INVALID_HANDLE_VALUE, "cannot lock fixture settings");
@@ -172,6 +193,16 @@ int wmain() {
     check(parse(3, promptCommand, parsed) && parsed.prompts == "modern", "icon mode must parse");
     promptCommand[2] = p3;
     check(!parse(3, promptCommand, parsed), "invalid icon option must be rejected");
+    wchar_t v1[] = L"--render-scale", v2[] = L"8", v3[] = L"--window-size", v4[] = L"1920x1088";
+    wchar_t* graphicsCommand[] = {a0, v1, v2, v3, v4};
+    check(parse(5, graphicsCommand, parsed) && parsed.renderScale == "8" && parsed.windowSize == "1920x1088", "graphics arguments must parse independently");
+    graphicsCommand[2] = p3;
+    check(!parse(5, graphicsCommand, parsed), "invalid graphics option must be rejected");
+    wchar_t zero[] = L"0", nine[] = L"9", extreme[] = L"999999999999";
+    for (auto invalid : {zero, nine, extreme}) {
+      graphicsCommand[2] = invalid;
+      check(!parse(5, graphicsCommand, parsed), "out-of-range graphics scale must be rejected");
+    }
     if (GetEnvironmentVariableW(L"MGSPO_TEST_TOOLCHAIN", nullptr, 0) > 0) {
       setupToolchain();
       check(haveX64Toolchain(), "toolchain setup must select x64");
