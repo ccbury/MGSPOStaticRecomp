@@ -23,7 +23,16 @@ namespace k {
 
 namespace {
 
-constexpr uint32_t E_NOASYNC = 0x80020323;
+constexpr uint32_t E_ASYNC_BUSY = 0x80020329;
+constexpr uint32_t E_NOASYNC = 0x8002032A;
+// Completion is serviced on a later guest-clock tick, not inside the submitting syscall.
+// This is a command-latency approximation, not a UMD throughput model.
+constexpr uint64_t kAsyncReadLatencyUs = 1000;
+
+struct AsyncResult {
+  int64_t value;
+  uint64_t readyAt;
+};
 
 struct File {
   FILE* f = nullptr;
@@ -43,7 +52,7 @@ struct Dir {
 
 std::map<int, File> g_files;
 std::map<int, Dir> g_dirs;
-std::map<int, int64_t> g_async;
+std::map<int, AsyncResult> g_async;
 int g_nextFd = 3;
 std::string g_cwd = "disc0:/PSP_GAME/USRDIR/";
 
@@ -330,8 +339,20 @@ int do_close(int fd) {
   return 0;
 }
 
-void set_async(Cpu& c, int fd, int64_t res) {
-  g_async[fd] = res;
+bool file_available(Cpu& c, int fd) {
+  if (g_async.count(fd)) {
+    ret(c, E_ASYNC_BUSY);
+    return false;
+  }
+  if (!g_files.count(fd)) {
+    ret(c, E_IO_BADF);
+    return false;
+  }
+  return true;
+}
+
+void set_async(Cpu& c, int fd, int64_t res, uint64_t latency = 0) {
+  g_async[fd] = {res, now_us() + latency};
   ret(c, 0);
 }
 
@@ -360,57 +381,89 @@ void h_open_async(Cpu& c) {
       std::fprintf(stderr, "[io] sceIoOpenAsync(%s, flags %X) failed: %08X\n", vpath.c_str(), arg(c, 1), err);
     // the error is delivered through the async result of a pseudo descriptor
     fd = g_nextFd++;
-    g_async[fd] = static_cast<int32_t>(err);
+    g_async[fd] = {static_cast<int32_t>(err), now_us()};
   } else {
-    g_async[fd] = fd;
+    g_async[fd] = {fd, now_us()};
   }
   ret(c, static_cast<uint32_t>(fd));
 }
 
-void h_close(Cpu& c) { ret(c, static_cast<uint32_t>(do_close(static_cast<int>(arg(c, 0))))); }
+void h_close(Cpu& c) {
+  int fd = static_cast<int>(arg(c, 0));
+  if (!file_available(c, fd)) return;
+  ret(c, static_cast<uint32_t>(do_close(fd)));
+}
 void h_close_async(Cpu& c) {
   int fd = static_cast<int>(arg(c, 0));
+  if (!file_available(c, fd)) return;
   set_async(c, fd, do_close(fd));
 }
 
-void h_read(Cpu& c) { ret(c, static_cast<uint32_t>(do_read(static_cast<int>(arg(c, 0)), arg(c, 1), arg(c, 2)))); }
+void h_read(Cpu& c) {
+  int fd = static_cast<int>(arg(c, 0));
+  if (!file_available(c, fd)) return;
+  ret(c, static_cast<uint32_t>(do_read(fd, arg(c, 1), arg(c, 2))));
+}
 void h_read_async(Cpu& c) {
   int fd = static_cast<int>(arg(c, 0));
-  set_async(c, fd, do_read(fd, arg(c, 1), arg(c, 2)));
+  if (!file_available(c, fd)) return;
+  set_async(c, fd, do_read(fd, arg(c, 1), arg(c, 2)), kAsyncReadLatencyUs);
 }
 
-void h_write(Cpu& c) { ret(c, static_cast<uint32_t>(do_write(static_cast<int>(arg(c, 0)), arg(c, 1), arg(c, 2)))); }
+void h_write(Cpu& c) {
+  int fd = static_cast<int>(arg(c, 0));
+  if (fd > 2 && !file_available(c, fd)) return;
+  ret(c, static_cast<uint32_t>(do_write(fd, arg(c, 1), arg(c, 2))));
+}
 void h_write_async(Cpu& c) {
   int fd = static_cast<int>(arg(c, 0));
+  if (!file_available(c, fd)) return;
   set_async(c, fd, do_write(fd, arg(c, 1), arg(c, 2)));
 }
 
 // 64-bit offset sits in a2:a3, whence in t0
 void h_lseek(Cpu& c) {
+  if (!file_available(c, static_cast<int>(arg(c, 0)))) {
+    ret64(c, static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(c.r[2]))));
+    return;
+  }
   int64_t r = do_seek(static_cast<int>(arg(c, 0)), static_cast<int64_t>(arg64(c, 2)), static_cast<int>(arg(c, 4)));
   ret64(c, static_cast<uint64_t>(r));
 }
 void h_lseek_async(Cpu& c) {
   int fd = static_cast<int>(arg(c, 0));
+  if (!file_available(c, fd)) return;
   set_async(c, fd, do_seek(fd, static_cast<int64_t>(arg64(c, 2)), static_cast<int>(arg(c, 4))));
 }
 void h_lseek32(Cpu& c) {
+  if (!file_available(c, static_cast<int>(arg(c, 0)))) return;
   int64_t r = do_seek(static_cast<int>(arg(c, 0)), static_cast<int32_t>(arg(c, 1)), static_cast<int>(arg(c, 2)));
   ret(c, static_cast<uint32_t>(r));
 }
 void h_lseek32_async(Cpu& c) {
   int fd = static_cast<int>(arg(c, 0));
+  if (!file_available(c, fd)) return;
   set_async(c, fd, do_seek(fd, static_cast<int32_t>(arg(c, 1)), static_cast<int>(arg(c, 2))));
 }
 
 // UMD ioctls (file position, sector lookups) have nothing to do on a host file system
-void h_ioctl_async(Cpu& c) { set_async(c, static_cast<int>(arg(c, 0)), 0); }
+void h_ioctl_async(Cpu& c) {
+  int fd = static_cast<int>(arg(c, 0));
+  if (!file_available(c, fd)) return;
+  set_async(c, fd, 0);
+}
 
-void async_result(Cpu& c, int fd, uint32_t resPtr, bool poll) {
-  (void)poll;
+void async_result(Cpu& c, int fd, uint32_t resPtr, bool poll, bool cb = false) {
   auto it = g_async.find(fd);
-  if (it == g_async.end()) return ret(c, E_NOASYNC);
-  put64(resPtr, static_cast<uint64_t>(it->second));
+  if (it == g_async.end()) return ret(c, g_files.count(fd) ? E_NOASYNC : E_IO_BADF);
+  const uint64_t readyAt = it->second.readyAt;
+  if (now_us() < readyAt) {
+    if (poll) return ret(c, 1);
+    sleep_until(c, readyAt, cb);
+    it = g_async.find(fd);
+    if (it == g_async.end()) return ret(c, g_files.count(fd) ? E_NOASYNC : E_IO_BADF);
+  }
+  put64(resPtr, static_cast<uint64_t>(it->second.value));
   g_async.erase(it);
   ret(c, 0);
 }
@@ -418,7 +471,10 @@ void h_poll_async(Cpu& c) { async_result(c, static_cast<int>(arg(c, 0)), arg(c, 
 void h_wait_async(Cpu& c) { async_result(c, static_cast<int>(arg(c, 0)), arg(c, 1), false); }
 void h_wait_async_cb(Cpu& c) {
   run_callbacks(c);
-  async_result(c, static_cast<int>(arg(c, 0)), arg(c, 1), false);
+  async_result(c, static_cast<int>(arg(c, 0)), arg(c, 1), false, true);
+}
+void h_get_async_stat(Cpu& c) {
+  async_result(c, static_cast<int>(arg(c, 0)), arg(c, 2), arg(c, 1) != 0);
 }
 void h_zero(Cpu& c) { ret(c, 0); }
 
@@ -605,7 +661,7 @@ void register_io() {
   register_hle(m, 0x3251EA56, "sceIoPollAsync", h_poll_async);
   register_hle(m, 0xE23EEC33, "sceIoWaitAsync", h_wait_async);
   register_hle(m, 0x35DBD746, "sceIoWaitAsyncCB", h_wait_async_cb);
-  register_hle(m, 0xCB05F8D6, "sceIoGetAsyncStat", h_poll_async);
+  register_hle(m, 0xCB05F8D6, "sceIoGetAsyncStat", h_get_async_stat);
   register_hle(m, 0xA12A0514, "sceIoSetAsyncCallback", h_zero);
   register_hle(m, 0xACE946E8, "sceIoGetstat", h_getstat);
   register_hle(m, 0x06A70004, "sceIoMkdir", h_mkdir);
