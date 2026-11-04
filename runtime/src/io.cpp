@@ -362,7 +362,7 @@ void h_open_async(Cpu& c) {
     fd = g_nextFd++;
     g_async[fd] = static_cast<int32_t>(err);
   } else {
-    g_async[fd] = 0;
+    g_async[fd] = fd;
   }
   ret(c, static_cast<uint32_t>(fd));
 }

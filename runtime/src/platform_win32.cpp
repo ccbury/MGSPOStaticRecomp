@@ -7,6 +7,7 @@
 #endif
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <windows.h>
 #include <mmsystem.h>
 
@@ -146,6 +147,21 @@ std::vector<int16_t> g_abuf[kBuffers];
 std::thread g_audioThread;
 std::atomic<bool> g_audioRun{false};
 AudioFill g_fill = nullptr;
+FILE* g_audioDump = nullptr;
+size_t g_audioDumpBytes = 0;
+
+void dump_audio(const int16_t* samples, size_t count) {
+  if (!g_audioDump) return;
+  const size_t bytes = count * sizeof(int16_t);
+  if (g_audioDumpBytes + bytes > (64u << 20) ||
+      std::fwrite(samples, 1, bytes, g_audioDump) != bytes || std::fflush(g_audioDump) != 0) {
+    std::fprintf(stderr, "[audio] Raw capture stopped: write failed or 64 MiB limit reached.\n");
+    std::fclose(g_audioDump);
+    g_audioDump = nullptr;
+    return;
+  }
+  g_audioDumpBytes += bytes;
+}
 
 void audio_main() {
   while (g_audioRun) {
@@ -153,6 +169,7 @@ void audio_main() {
     for (int i = 0; i < kBuffers; ++i) {
       if (g_hdr[i].dwFlags & WHDR_INQUEUE) continue;
       g_fill(g_abuf[i].data(), kBufFrames);
+      dump_audio(g_abuf[i].data(), kBufFrames * 2);
       waveOutWrite(g_wave, &g_hdr[i], sizeof(WAVEHDR));
       fed = true;
     }
@@ -235,7 +252,8 @@ Pad poll_pad() {
 }
 
 bool audio_start(int rate, AudioFill fill) {
-  if (g_headless || g_wave) return false;
+  const char* dump = std::getenv("MGSPO_AUDIO_DUMP_RAW");
+  if ((g_headless && !dump) || g_wave) return false;
   WAVEFORMATEX fmt{};
   fmt.wFormatTag = WAVE_FORMAT_PCM;
   fmt.nChannels = 2;
@@ -244,8 +262,14 @@ bool audio_start(int rate, AudioFill fill) {
   fmt.nBlockAlign = 4;
   fmt.nAvgBytesPerSec = fmt.nSamplesPerSec * 4;
   if (waveOutOpen(&g_wave, WAVE_MAPPER, &fmt, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) {
+    std::fprintf(stderr, "[audio] Cannot open 16-bit stereo output at %d Hz.\n", rate);
     g_wave = nullptr;
     return false;
+  }
+  if (dump) {
+    g_audioDump = std::fopen(dump, "wb");
+    if (!g_audioDump) std::fprintf(stderr, "[audio] Cannot open raw audio capture: %s\n", dump);
+    else std::fprintf(stderr, "[audio] Capturing mixed output: %d Hz, stereo s16le, limit 64 MiB.\n", rate);
   }
   g_fill = fill;
   for (int i = 0; i < kBuffers; ++i) {
