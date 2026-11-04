@@ -47,6 +47,10 @@ int main() {
     CHECK(psp::prof::is_wait_symbol(symbol));
   for (const char* symbol : {"f_08804128", "psp::ge::fast::sample<2>", "psp::vfpu::exec", "?"})
     CHECK(!psp::prof::is_wait_symbol(symbol));
+  for (const char* symbol : {"f_08804128", "o_3916DB1B4BA7CC9C", "ovl_08B7632C"})
+    CHECK(psp::prof::is_guest_symbol(symbol));
+  for (const char* symbol : {"psp::ge::fast::sample<2>", "psp::vfpu::exec", "foo", "other", "?"})
+    CHECK(!psp::prof::is_guest_symbol(symbol));
   if (!failures) std::puts("Profile cadence and wait classification checks passed.");
   return failures ? 1 : 0;
 }

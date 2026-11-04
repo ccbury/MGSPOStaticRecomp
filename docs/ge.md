@@ -98,6 +98,52 @@ to active runtime work. The requested interval is not a guaranteed sampling
 rate: thread enumeration/suspension and host sleep resolution add overhead.
 Sampling itself can perturb scheduling.
 
+Lifted main and overlay symbols (`f_`, hash-sharded `o_`, and legacy `ovl_`)
+are classified as guest code. VFPU interpreter helpers remain runtime work,
+not lifted guest symbols.
+
+### Controlled cell and sampling overhead
+
+A later Software 1x, two-rendering-thread comparison separated active cell
+gameplay from the prison pause/map menu. Periodic Start/Circle input through
+33.333 seconds left the game paused; Start did not dismiss that menu, and
+Circle selected its highlighted item. A Cross-only press at 40 seconds
+returned to the cell, with no later input. Captures at 55 seconds confirmed
+the cell scene rather than the menu.
+
+Both 60-second comparison runs used the same executable, isolated copies of
+the same saves, mixed-audio capture, five-second screenshots and `--profile`.
+One additionally enabled `--sample 45`:
+
+| Final two profile windows | Sampling enabled | Sampling disabled |
+| --- | --- | --- |
+| Buffer flips/s | 15.4 / 15.9 | 20.0 / 20.0 |
+| GE ms per wall second | 646.7 / 655.1 | 657.6 / 672.2 |
+| Skipped vblanks | 29 / 19 | 0 / 0 |
+
+This single sequential pair shows substantial measurement perturbation in
+this workload, not a renderer speedup. The sampled run collected only 216
+rounds despite requesting a 1 ms interval. Its 96.5% aggregate waiting share
+includes parked threads; it does not mean the main thread was mostly idle.
+GE accounted for 66.0% of its non-wait samples, including triangle emission
+and patch work; VFPU helpers were also prominent. A paused-menu profile
+instead emphasized indexed bilinear sampling, so it is not an interchangeable
+gameplay optimization baseline.
+
+Without sampling, the observed cell reached its previously measured
+three-vblank target with audio enabled. GE still consumed about 33-34 ms per
+flip, leaving limited headroom for heavier scenes. These results do not
+establish performance during movement, combat, other stages, higher internal
+resolutions or windowed presentation, nor prove that every reported slowdown
+is sampling overhead. No simulation timing, frame target or rendering work
+was skipped or changed.
+
+Both runs exited normally under the existing memory/CPU monitor. Peak private
+bytes were 92,565,504 / 90,955,776 (sampling enabled / disabled); minimum free
+physical memory exceeded 17.3 GB and free commit exceeded 24.8 GB. The
+generated-stage objects were reused; captures, audio and game content remain
+local only.
+
 ### Cadence investigation (two rendering threads)
 
 A controlled 140-second, fresh-save, headless run of the existing prison-stage

@@ -79,7 +79,7 @@ enum Kind { kGuest, kGe, kWait, kOther };
 const char* kKindName[] = {"lifted guest code", "GE (list execution, raster)", "waiting / idle", "other runtime"};
 
 Kind classify(const std::string& s) {
-  if (s.rfind("f_", 0) == 0 || s.rfind("ovl_", 0) == 0) return kGuest;
+  if (is_guest_symbol(s)) return kGuest;
   if (s.find("psp::ge::") != std::string::npos || s.find("Raster") != std::string::npos) return kGe;
   if (is_wait_symbol(s)) return kWait;
   return kOther;

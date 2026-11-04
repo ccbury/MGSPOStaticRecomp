@@ -6,6 +6,10 @@
 namespace psp {
 namespace prof {
 
+inline bool is_guest_symbol(std::string_view s) {
+  return s.rfind("f_", 0) == 0 || s.rfind("o_", 0) == 0 || s.rfind("ovl_", 0) == 0;
+}
+
 inline bool is_wait_symbol(std::string_view s) {
   return s.find("Wait") != std::string_view::npos || s.find("Sleep") != std::string_view::npos ||
          s.find("DelayExecution") != std::string_view::npos || s.find("SwitchTo") != std::string_view::npos ||
