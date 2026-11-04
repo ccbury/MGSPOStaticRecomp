@@ -9,7 +9,9 @@ namespace {
 Backend g_backend = Backend::Software;
 std::unique_ptr<Device> g_device;
 Counters g_counters;
+void (*g_flush)() = nullptr;
 std::atomic<uint64_t> g_submissions{0}, g_dispatches{0}, g_primitives{0};
+std::atomic<uint64_t> g_uploads{0}, g_readbacks{0};
 std::unique_ptr<Device> create(Backend backend) {
 #ifdef _WIN32
   if (backend == Backend::D3D11) return create_d3d11();
@@ -41,11 +43,13 @@ const char* name(Backend backend) {
   throw std::invalid_argument("Invalid renderer backend.");
 }
 void select(Backend backend) {
+  if (g_flush) g_flush();
   auto device = backend == Backend::Software ? nullptr : create(backend);
   g_device = std::move(device);
   g_backend = backend;
   g_counters = {};
   g_submissions = 0; g_dispatches = 0; g_primitives = 0;
+  g_uploads = 0; g_readbacks = 0;
   std::fprintf(stderr, "[renderer] %s: %s; native guest pass remains CPU-authoritative\n", name(backend),
                g_device ? g_device->description().c_str() : "CPU software rasterizer");
 }
@@ -60,14 +64,21 @@ bool built(Backend backend) {
 #endif
   return false;
 }
-Counters counters() { return {g_submissions.load(), g_dispatches.load(), g_primitives.load()}; }
+bool retains_targets() { return g_device && g_device->retains_targets(); }
+Counters counters() {
+  return {g_submissions.load(), g_dispatches.load(), g_primitives.load(), g_uploads.load(), g_readbacks.load()};
+}
+void set_flush_callback(void (*flush)()) { g_flush = flush; }
 void report() {
   const auto c = counters();
-  std::fprintf(stderr, "[renderer] GPU submissions=%llu dispatches=%llu primitives=%llu\n",
-               (unsigned long long)c.submissions, (unsigned long long)c.dispatches, (unsigned long long)c.primitives);
+  std::fprintf(stderr, "[renderer] GPU submissions=%llu dispatches=%llu primitives=%llu target uploads=%llu readbacks=%llu\n",
+               (unsigned long long)c.submissions, (unsigned long long)c.dispatches, (unsigned long long)c.primitives,
+               (unsigned long long)c.uploads, (unsigned long long)c.readbacks);
 }
 void run(Job& job) {
   if (!g_device) throw std::logic_error("Hardware draw submitted without an initialized device.");
+  if ((!job.uploadTargets || !job.readbackTargets) && !retains_targets())
+    throw std::runtime_error("Selected backend does not support retained-target transfers.");
   constexpr size_t budget = 128u << 20;
   const size_t bytes = (job.colour.size() + job.depth.size() + job.texture.size()) * sizeof(uint32_t);
   if (bytes > budget || job.commands.size() > 4096)
@@ -87,11 +98,18 @@ void run(Job& job) {
   }
   auto commands = std::move(job.commands);
   const auto primitivesBefore = g_counters.primitives;
-  auto flush = [&] {
-    if (job.commands.empty()) return;
+  const bool upload = job.uploadTargets, readback = job.readbackTargets;
+  bool first = true;
+  auto flush = [&](bool last) {
+    if (job.commands.empty() && (first || !last || !readback)) return;
+    job.uploadTargets = upload && first;
+    job.readbackTargets = readback && last;
+    if (!retains_targets()) job.uploadTargets = job.readbackTargets = true;
     g_device->run(job, g_counters);
+    first = false;
     g_counters.primitives = primitivesBefore;
     g_submissions = g_counters.submissions; g_dispatches = g_counters.dispatches;
+    g_uploads = g_counters.uploads; g_readbacks = g_counters.readbacks;
     job.commands.clear();
   };
   try {
@@ -103,21 +121,25 @@ void run(Job& job) {
           tile.bounds[0] += x; tile.bounds[1] += y;
           tile.bounds[2] = std::min(256u, command.bounds[2] - x);
           tile.bounds[3] = std::min(256u, command.bounds[3] - y);
+          if (job.commands.size() == 64) flush(false);
           job.commands.push_back(tile);
-          if (job.commands.size() == 64) flush();
         }
       }
     }
-    flush();
+    if (commands.empty() && !upload && readback) first = false;
+    flush(true);
     g_counters.primitives += commands.size();
     g_primitives = g_counters.primitives;
   } catch (...) {
     job.commands = std::move(commands);
+    job.uploadTargets = upload; job.readbackTargets = readback;
     throw;
   }
   job.commands = std::move(commands);
+  job.uploadTargets = upload; job.readbackTargets = readback;
 }
 void reset() {
+  if (g_flush) g_flush();
   if (g_device) report();
   g_device.reset();
   g_backend = Backend::Software;

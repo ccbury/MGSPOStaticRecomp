@@ -143,15 +143,36 @@ The exact native **CPU pass still runs**, even at hardware 1x, to preserve guest
 The same explicit feedback/CPU/movie/alias fallbacks apply. Neither hardware selection nor a native
 fallback guarantees higher detail for every frame.
 
-This correctness-first path synchronously uploads and reads back host shadows for each draw; it may
-be **much slower than Software**, not a promised acceleration. On the RTX 2070 SUPER verification
-host, bounded prison-scene runs measured roughly 0.5 flips/s with D3D11 and 0.8..1.8 with D3D12 at 1x;
-2x stage/fade intervals were about 0.2 flips/s. These are smoke observations, not a controlled
-same-frame performance benchmark. **Software remains recommended for playing.**
+Consecutive draws with the same colour/depth planes and decoded texture contents are batched
+in strict order, retaining per-draw depth/blend/scissor and other shader state. Host readback is
+deferred until presentation, explicit host-plane access, incompatible target changes,
+CPU/alias reseeding, reset or renderer replacement. Guest CPU reads still see the native pass
+immediately, never deferred GPU pixels. Decoded texture contents are compared, not just guest addresses,
+so changing a texture cannot reuse stale data. A texture change submits preceding commands with their
+old snapshot, then changes the texture without uploading or reading back the Direct3D targets.
+At most 4096 primitives accumulate before bounded execution; each submission still waits at the
+64-tile limit, but Direct3D target pixels remain on the GPU across those fenced chunks.
+GPU colour/depth/staging resources persist across completed submissions in D3D11 and D3D12,
+rather than allocating per draw. Counters report target upload/readback pairs separately from dispatches.
+The prerequisite-gated, unverified Vulkan path does not yet support retained-target transfers;
+it keeps explicit bounded synchronous transfers rather than claiming this Direct3D optimization.
+
+This reduces one measured 128-draw, 32x32 depth/blend fixture at 2x from 128 submissions to two
+with one target upload/readback pair and an identical host-image hash: D3D11 was about 1999 ms before
+batching versus 40..46 ms after; D3D12 about 457 ms versus 20 ms on an RTX 2070 SUPER. Reproduce with
+`mgspo-ge-tests d3d11 --batch-workload` or `d3d12 --batch-workload`. These are small-workload
+observations, not a game-speed comparison or a claim of being faster than Software.
+Texture/target switches, conversion, native rendering and synchronous bounded-chunk waits still
+cost time. Before batching, bounded prison observations were only about 0.5 flips/s with D3D11
+and 0.8..1.8 with D3D12 at 1x, and some 2x stage/fade intervals about 0.2.
+Latest bounded post-batching runs showed matching host/native PRISON pause menus at D3D11 1x and
+D3D12 2x. Late profiler intervals were around 1.1 flips/s and 5.0..6.2 flips/s respectively;
+these are different-scale/state smoke observations, not a controlled before/after game benchmark.
+**Software remains recommended for playing** until broader hardware performance/correctness is established.
 Hardware mode expands packed colour/depth
 into 32-bit storage entries (including 16-bit guest formats). Upload arrays are bounded to 128 MiB
 per job, ordered submissions to 64 tiles of at most 256x256 pixels, and completion waits to five
-seconds with no retry after timeout/device failure. D3D12 reuses only completed fenced allocations,
+seconds with no retry after timeout/device failure. Both Direct3D backends reuse only completed allocations
 within a 384 MiB logical buffer budget, in addition to host shadows/conversion and driver overhead.
 Large targets can fail explicitly with a lower-scale recommendation. An unfinished terminal
 submission is retained until process teardown, rather than freeing memory still in GPU use.

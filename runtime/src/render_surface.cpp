@@ -20,6 +20,10 @@ uint64_t g_tick = 0;
 std::vector<std::shared_ptr<Plane>> g_planes;
 std::vector<std::string> g_diagnostics;
 constexpr size_t kPlanes = 8;
+struct Pending {
+  std::shared_ptr<Plane> colour, depth;
+  hardware::Job job;
+} g_pending;
 
 size_t cost(const Plane& p) { return p.native.size() + p.pixels.size(); }
 uint32_t physical(uint32_t addr) {
@@ -43,6 +47,7 @@ void native_access() {
 int scale() { return g_scale; }
 void reset() {
   fast::sync();
+  flush_hardware();
   g_planes.clear();
   g_diagnostics.clear();
   g_access = 0;
@@ -71,7 +76,8 @@ size_t budget_bytes() {
   // Three native 512x272 RGBA-sized planes at the selected scale, with a 64 MiB floor.
   return std::max<size_t>(64u << 20, size_t(512) * 272 * 4 * (1 + g_scale * g_scale) * 3);
 }
-void Plane::refresh() {
+void Plane::refresh(bool deferHardware) {
+  if (!deferHardware) flush_hardware();
   NativeScope scope;
   const uint8_t* src = ptr(addr);
   const uint64_t epoch = g_access.load(std::memory_order_relaxed);
@@ -79,6 +85,7 @@ void Plane::refresh() {
     diagnostic("CPU/HLE access or aliased view: reseeding host samples from authoritative native VRAM.");
     reseed();
   } else if (std::memcmp(src, native.data(), native.size()) != 0) {
+    flush_hardware();
     // Also catches writes through a retained host pointer, without changing generated guest code.
     for (size_t i = 0; i < native.size() / bpp; ++i)
       if (std::memcmp(src + i * bpp, native.data() + i * bpp, bpp) != 0)
@@ -88,6 +95,7 @@ void Plane::refresh() {
   }
 }
 void Plane::reseed() {
+  flush_hardware();
   NativeScope scope;
   const uint8_t* src = ptr(addr);
   for (size_t i = 0; i < native.size() / bpp; ++i) seed_pixel(*this, i, src + i * bpp);
@@ -104,6 +112,9 @@ void Plane::accept_native() {
 }
 void written(uint32_t addr, size_t bytes) {
   if (g_scale == 1 && hardware::selected() == hardware::Backend::Software) return;
+  if ((g_pending.colour && overlaps(addr, bytes, g_pending.colour->addr, g_pending.colour->native.size())) ||
+      (g_pending.depth && overlaps(addr, bytes, g_pending.depth->addr, g_pending.depth->native.size())))
+    flush_hardware();
   for (auto& p : g_planes)
     if (overlaps(addr, bytes, p->addr, p->native.size())) p->dirty = true;
 }
@@ -112,7 +123,8 @@ bool is_target(uint32_t addr, size_t bytes) {
     if (overlaps(addr, bytes, p->addr, p->native.size())) return true;
   return false;
 }
-std::shared_ptr<Plane> acquire(uint32_t addr, uint32_t stride, int format, int rows) {
+std::shared_ptr<Plane> acquire(uint32_t addr, uint32_t stride, int format, int rows, bool deferHardware) {
+  if (!deferHardware) flush_hardware();
   if (g_scale == 1 && hardware::selected() == hardware::Backend::Software) return {};
   NativeScope scope;
   addr = physical(addr);
@@ -131,11 +143,11 @@ std::shared_ptr<Plane> acquire(uint32_t addr, uint32_t stride, int format, int r
     if (p->addr == addr && p->stride == stride && p->format == format) {
       if (p->rows >= rows) {
         p->used = ++g_tick;
-        p->refresh();
+        p->refresh(deferHardware);
         return p;
       }
       old = p;
-      old->refresh();
+      old->refresh(deferHardware);
       break;
     }
   }
@@ -171,6 +183,7 @@ std::shared_ptr<Plane> acquire(uint32_t addr, uint32_t stride, int format, int r
 std::shared_ptr<Plane> display(uint32_t addr, uint32_t stride, int format) {
   if (g_scale == 1 && hardware::selected() == hardware::Backend::Software) return {};
   fast::sync();
+  flush_hardware();
   for (auto& p : g_planes)
     if (p->addr == physical(addr) && p->stride == stride && p->format == format && p->rows >= 272) {
       p->refresh();
@@ -179,5 +192,67 @@ std::shared_ptr<Plane> display(uint32_t addr, uint32_t stride, int format) {
     }
   diagnostic("Display has no matching host target: presenting native-resolution pixels.");
   return {};
+}
+
+void submit_hardware() {
+  auto& job = g_pending.job;
+  if (job.commands.empty()) return;
+  job.readbackTargets = !hardware::retains_targets();
+  hardware::run(job);
+  job.commands.clear();
+  job.uploadTargets = !hardware::retains_targets();
+  job.readbackTargets = true;
+}
+
+void flush_hardware() {
+  if (!g_pending.colour) return;
+  auto& job = g_pending.job;
+  if (!job.commands.empty() || !job.uploadTargets) hardware::run(job);
+  auto pack = [](const std::vector<uint32_t>& input, Plane& plane) {
+    if (plane.bpp == 4) {
+      std::memcpy(plane.pixels.data(), input.data(), plane.pixels.size());
+    } else for (size_t i = 0; i < input.size(); ++i) {
+      const uint16_t pixel = static_cast<uint16_t>(input[i]);
+      std::memcpy(plane.pixels.data() + i * 2, &pixel, 2);
+    }
+  };
+  pack(job.colour, *g_pending.colour);
+  if (g_pending.depth) pack(job.depth, *g_pending.depth);
+  g_pending = {};
+}
+
+hardware::Job& hardware_draw(const std::shared_ptr<Plane>& colour,
+                            const std::shared_ptr<Plane>& depth, std::vector<uint32_t> texture) {
+  hardware::set_flush_callback(flush_hardware);
+  if (g_pending.colour != colour || g_pending.depth != depth ||
+      (!hardware::retains_targets() && g_pending.job.texture != texture))
+    flush_hardware();
+  if (g_pending.colour && g_pending.job.texture != texture) {
+    submit_hardware();
+    g_pending.job.texture = std::move(texture);
+  }
+  if (!g_pending.colour) {
+    const size_t entries = colour->pixels.size() / colour->bpp +
+                           (depth ? depth->pixels.size() / depth->bpp : 1) + texture.size();
+    if (entries > (128u << 20) / sizeof(uint32_t))
+      throw std::runtime_error("Hardware shadow conversion exceeds bounded upload/storage budget; select a lower internal scale.");
+    auto expand = [](const Plane& plane, std::vector<uint32_t>& output) {
+      output.resize(plane.pixels.size() / plane.bpp);
+      if (plane.bpp == 4) {
+        std::memcpy(output.data(), plane.pixels.data(), plane.pixels.size());
+      } else for (size_t i = 0; i < output.size(); ++i) {
+        uint16_t pixel;
+        std::memcpy(&pixel, plane.pixels.data() + i * 2, 2);
+        output[i] = pixel;
+      }
+    };
+    expand(*colour, g_pending.job.colour);
+    if (depth) expand(*depth, g_pending.job.depth);
+    else g_pending.job.depth.push_back(65535);
+    g_pending.job.texture = std::move(texture);
+    g_pending.colour = colour;
+    g_pending.depth = depth;
+  }
+  return g_pending.job;
 }
 }  // namespace psp::ge::surface

@@ -289,7 +289,7 @@ struct Raster {
   uint8_t* fb = nullptr;
   uint32_t fbAddr = 0, zAddr = 0;
   int rasterScale = 1;
-  std::unique_ptr<hardware::Job> gpuJob;
+  hardware::Job* gpuJob = nullptr;
   uint32_t fbStride = 0;
   int fbFmt = 3, fbBpp = 4;
   uint8_t* zb = nullptr;
@@ -394,8 +394,8 @@ struct Raster {
   template<class Draw> void render_both(Draw draw) {
     if (surface::scale() == 1 && hardware::selected() == hardware::Backend::Software) { draw(*this); return; }
     fast::sync();
-    auto colour = surface::acquire(fbAddr, fbStride, fbFmt, sy2 + 1);
-    auto depth = zb ? surface::acquire(zAddr, zStride, -1, sy2 + 1) : nullptr;
+    auto colour = surface::acquire(fbAddr, fbStride, fbFmt, sy2 + 1, true);
+    auto depth = zb ? surface::acquire(zAddr, zStride, -1, sy2 + 1, true) : nullptr;
     bool usable = colour && (!zb || depth);
     if (zb && surface::overlaps(fbAddr, size_t(fbStride) * (sy2 + 1) * fbBpp,
                                zAddr, size_t(zStride) * (sy2 + 1) * 2)) {
@@ -412,11 +412,12 @@ struct Raster {
         surface::diagnostic("Self-texturing draw: host target reseeded from the native result.");
       }
     }
+    if (!usable) surface::flush_hardware();
     draw(*this);
     fast::sync();
-    surface::written(fbAddr, size_t(fbStride) * (sy2 + 1) * fbBpp);
-    if (zb) surface::written(zAddr, size_t(zStride) * (sy2 + 1) * 2);
     if (!usable) {
+      surface::written(fbAddr, size_t(fbStride) * (sy2 + 1) * fbBpp);
+      if (zb) surface::written(zAddr, size_t(zStride) * (sy2 + 1) * 2);
       if (colour) colour->reseed();
       if (depth) depth->reseed();
       return;
@@ -438,59 +439,28 @@ struct Raster {
     high.sx1 *= scale; high.sy1 *= scale;
     high.sx2 = (high.sx2 + 1) * scale - 1; high.sy2 = (high.sy2 + 1) * scale - 1;
     high.decide_fast();
-    if (hardware::selected() != hardware::Backend::Software) high.begin_gpu(*colour, depth.get());
+    if (hardware::selected() != hardware::Backend::Software) high.begin_gpu(colour, depth);
     draw(high);
-    if (high.gpuJob) high.finish_gpu(*colour, depth.get());
     fast::sync();
   }
 
-  void begin_gpu(const surface::Plane& colour, const surface::Plane* depth) {
-    gpuJob = std::make_unique<hardware::Job>();
-    auto expand = [](const std::vector<uint8_t>& input, int bpp, std::vector<uint32_t>& output) {
-      output.resize(input.size() / bpp);
-      if (bpp == 4) {
-        std::memcpy(output.data(), input.data(), input.size());
-        return;
-      }
-      for (size_t i = 0; i < output.size(); ++i) {
-        uint16_t pixel;
-        std::memcpy(&pixel, input.data() + i * 2, 2);
-        output[i] = pixel;
-      }
-    };
-    expand(colour.pixels, fbBpp, gpuJob->colour);
-    if (depth) expand(depth->pixels, 2, gpuJob->depth);
-    else gpuJob->depth.push_back(65535);
+  void begin_gpu(const std::shared_ptr<surface::Plane>& colour, const std::shared_ptr<surface::Plane>& depth) {
+    std::vector<uint32_t> texture;
     if (texOn) {
-      gpuJob->texture.resize(size_t(tW) * tH);
+      texture.resize(size_t(tW) * tH);
       if (setup_fast()) {
-        if (fx.texRgba) std::copy(fx.texRgba, fx.texRgba + gpuJob->texture.size(), gpuJob->texture.begin());
-        else for (size_t i = 0; i < gpuJob->texture.size(); ++i) gpuJob->texture[i] = pal[fx.texIdx[i]];
+        if (fx.texRgba) std::copy(fx.texRgba, fx.texRgba + texture.size(), texture.begin());
+        else for (size_t i = 0; i < texture.size(); ++i) texture[i] = pal[fx.texIdx[i]];
       } else {
         for (int y = 0; y < tH; ++y)
-          for (int x = 0; x < tW; ++x) gpuJob->texture[size_t(y) * tW + x] = texel(x, y);
+          for (int x = 0; x < tW; ++x) texture[size_t(y) * tW + x] = texel(x, y);
       }
     }
-  }
-  void finish_gpu(surface::Plane& colour, surface::Plane* depth) {
-    if (!gpuJob->commands.empty()) hardware::run(*gpuJob);
-    auto pack = [](const std::vector<uint32_t>& input, int bpp, std::vector<uint8_t>& output) {
-      if (bpp == 4) {
-        std::memcpy(output.data(), input.data(), output.size());
-        return;
-      }
-      for (size_t i = 0; i < input.size(); ++i) {
-        uint16_t pixel = static_cast<uint16_t>(input[i]);
-        std::memcpy(output.data() + i * 2, &pixel, 2);
-      }
-    };
-    pack(gpuJob->colour, fbBpp, colour.pixels);
-    if (depth) pack(gpuJob->depth, 2, depth->pixels);
+    gpuJob = &surface::hardware_draw(colour, depth, std::move(texture));
   }
   void gpu_primitive(const SV& a, const SV& b, const SV& c, bool rectangle) {
     if (gpuJob->commands.size() == 4096) {
-      hardware::run(*gpuJob);
-      gpuJob->commands.clear();
+      surface::submit_hardware();
     }
     hardware::Command packet;
     std::copy(r, r + 256, packet.registers);
